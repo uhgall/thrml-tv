@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Iterable
 
 try:  # pragma: no cover - allow running as script or module
-    from .tv_graph import TVGraph
+    from .tv_graph import DomainViolation, InterferenceViolation, TVGraph
 except ImportError:  # pragma: no cover
-    from tv_graph import TVGraph
+    from tv_graph import DomainViolation, InterferenceViolation, TVGraph
 
 
 def _iter_constraints(graph: TVGraph) -> Iterable[tuple[int, int, int, int, str]]:
@@ -122,6 +122,8 @@ def render_stats(
     stats: dict[str, object],
     *,
     top_k: int,
+    domain_violations: list[DomainViolation],
+    interference_violations: list[InterferenceViolation],
 ) -> None:
     """
     Print formatted statistics and symmetry checks.
@@ -137,6 +139,18 @@ def render_stats(
         "Constraints per station (avg/min/max): "
         f"{stats['constraint_avg']:.2f} / {stats['constraint_min']} / {stats['constraint_max']}"
     )
+
+    domain_violation_count = len(domain_violations)
+    interference_violation_count = len(interference_violations)
+    print(f"Domain violations (new_channel outside domain): {domain_violation_count:,}")
+    print(f"Interference violations (new_channel conflicts): {interference_violation_count:,}")
+
+    if domain_violations:
+        print("\nStations with new_channel outside domain:")
+        for violation in sorted(domain_violations, key=lambda item: item.station_id):
+            print(f"  {violation.station_id:<8} new_channel {violation.new_channel}")
+    else:
+        print("\n✅ All new_channel assignments fall within station domains.")
 
     type_counts: Counter[str] = stats["constraint_counts_by_type"]  # type: ignore[index]
     if type_counts:
@@ -197,7 +211,14 @@ def main(argv: list[str] | None = None) -> int:
 
     graph = TVGraph(args.input)
     stats = compute_graph_stats(graph)
-    render_stats(graph, stats, top_k=args.top)
+    domain_violations, interference_violations = graph.assignment_violations()
+    render_stats(
+        graph,
+        stats,
+        top_k=args.top,
+        domain_violations=domain_violations,
+        interference_violations=interference_violations,
+    )
 
     if args.strict:
         missing = find_asymmetric_constraints(graph)

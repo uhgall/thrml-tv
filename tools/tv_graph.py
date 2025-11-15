@@ -67,6 +67,30 @@ class Interference:
     station_indices: list[int] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class DomainViolation:
+    """
+    A post-auction channel assignment that is not permitted by the station domain.
+    """
+
+    station_id: int
+    new_channel: int
+    domain: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class InterferenceViolation:
+    """
+    A pair of post-auction channel assignments that violates a directional constraint.
+    """
+
+    constraint_type: str
+    subject_station_id: int
+    subject_channel: int
+    other_station_id: int
+    other_channel: int
+
+
 class TVGraph:
     """
     Container for stations, channel mappings, and interference data loaded from FCC inputs.
@@ -134,6 +158,7 @@ class TVGraph:
         station_limit: int = 5,
         channel_limit: int = 7,
         new_channel_only: bool = False,
+        remove_top_channel: bool = False,
     ) -> Path:
         """
         Persist a BFS-limited subset of the current graph to ``input/``.
@@ -151,6 +176,10 @@ class TVGraph:
             every station that has a post-auction channel assignment. Domains are
             intersected with the set of observed post-auction channels and the
             resulting files are filtered accordingly.
+        remove_top_channel:
+            When ``True`` and ``new_channel_only`` is set, exclude the domain channel with
+            the highest contiguous index from the exported graph while leaving post-auction
+            assignments untouched.
 
         Returns
         -------
@@ -159,6 +188,12 @@ class TVGraph:
             ``parameters.csv``, ``post_auction_parameters.csv``, and
             ``Interference_Paired.csv`` for the subset.
         """
+        if remove_top_channel and not new_channel_only:
+            raise ValueError("remove_top_channel requires new_channel_only=True.")
+
+        removed_channel_value: int | None = None
+        domain_channel_set: set[int]
+
         if new_channel_only:
             station_ids = [
                 station_id
@@ -172,13 +207,29 @@ class TVGraph:
                 for station_id in station_ids
                 if self.stations_by_id[station_id].new_channel is not None
             }
-            selected_channel_set = {channel for channel in selected_channel_set if channel is not None}
             if not selected_channel_set:
                 raise ValueError("No usable post-auction channels located in dataset.")
             station_ids = list(station_ids)
+            domain_channel_set = set(selected_channel_set)
+
+            if remove_top_channel:
+                max_channel_index: int | None = None
+                for station_id in station_ids:
+                    station = self.station(station_id)
+                    for channel in station.domain:
+                        if channel not in domain_channel_set:
+                            continue
+                        channel_index = self.channel_index_for_channel(channel)
+                        if max_channel_index is None or channel_index > max_channel_index:
+                            max_channel_index = channel_index
+                            removed_channel_value = channel
+                if removed_channel_value is None:
+                    raise ValueError("Unable to locate a domain channel eligible for removal.")
+                domain_channel_set.discard(removed_channel_value)
+
             output_dir = (
                 self.dataset_root.parent
-                / f"{self.dataset_root.name}-post-auction-{len(station_ids)}st-{len(selected_channel_set)}ch"
+                / f"{self.dataset_root.name}-post-auction-{len(station_ids)}st-{len(domain_channel_set)}ch"
             )
         else:
             if station_limit <= 0:
@@ -269,11 +320,11 @@ class TVGraph:
                 self.dataset_root.parent
                 / f"{self.dataset_root.name}-seed{seed_station}-st{station_limit}-ch{channel_limit}"
             )
+            domain_channel_set = set(selected_channel_set)
 
         station_set = set(station_ids)
 
-        selected_channel_set = set(selected_channel_set)
-        if new_channel_only and not selected_channel_set:
+        if new_channel_only and not domain_channel_set and not remove_top_channel:
             raise ValueError("Post-auction subgraph requires at least one valid channel.")
 
         output_dir.mkdir(parents=True, exist_ok=False)
@@ -283,8 +334,8 @@ class TVGraph:
             writer = csv.writer(handle)
             for station_id in station_ids:
                 station = self.station(station_id)
-                domain_subset = [channel for channel in station.domain if channel in selected_channel_set]
-                if not domain_subset:
+                domain_subset = [channel for channel in station.domain if channel in domain_channel_set]
+                if not domain_subset and not remove_top_channel:
                     raise ValueError(
                         f"Station {station_id} does not retain any channels within the selected subset."
                     )
@@ -320,9 +371,9 @@ class TVGraph:
             for station_id in station_ids:
                 station = self.station(station_id)
                 for interference in station.interferences:
-                    if interference.subject_channel not in selected_channel_set:
+                    if interference.subject_channel not in domain_channel_set:
                         continue
-                    if interference.other_channel not in selected_channel_set:
+                    if interference.other_channel not in domain_channel_set:
                         continue
 
                     partners: list[int] = []
@@ -446,6 +497,61 @@ class TVGraph:
         Boolean mask encoding station index -> allowed channel indices.
         """
         return self._domain_mask
+
+    def assignment_violations(self) -> tuple[list[DomainViolation], list[InterferenceViolation]]:
+        """
+        Identify post-auction assignments that violate domain or interference constraints.
+
+        Returns
+        -------
+        tuple[list[DomainViolation], list[InterferenceViolation]]
+            A tuple containing all domain violations and all interference violations.
+        """
+        domain_violations: list[DomainViolation] = []
+        interference_violations: list[InterferenceViolation] = []
+
+        for station in self.stations_by_id.values():
+            new_channel = station.new_channel
+            if new_channel is None:
+                continue
+            if new_channel not in station.domain:
+                domain_violations.append(
+                    DomainViolation(
+                        station_id=station.station_id,
+                        new_channel=new_channel,
+                        domain=tuple(station.domain),
+                    )
+                )
+
+        assigned_channels: dict[int, int] = {}
+        for station_id, station in self.stations_by_id.items():
+            if station.new_channel is not None:
+                assigned_channels[station_id] = station.new_channel
+
+        for station in self.stations_by_id.values():
+            subject_channel = station.new_channel
+            if subject_channel is None:
+                continue
+            for interference in station.interferences:
+                if subject_channel != interference.subject_channel:
+                    continue
+                for partner_index in interference.station_indices:
+                    partner_id = self.station_id_for_index(partner_index)
+                    partner_channel = assigned_channels.get(partner_id)
+                    if partner_channel is None:
+                        continue
+                    if partner_channel == interference.other_channel:
+                        interference_violations.append(
+                            InterferenceViolation(
+                                constraint_type=interference.constraint_type,
+                                subject_station_id=station.station_id,
+                                subject_channel=subject_channel,
+                                other_station_id=partner_id,
+                                other_channel=partner_channel,
+                            )
+                        )
+
+        return domain_violations, interference_violations
 
 
     def _load_interferences(self, path: Path) -> None:
@@ -620,5 +726,5 @@ class TVGraph:
         return value
 
 
-__all__ = ["Station", "Interference", "TVGraph"]
+__all__ = ["Station", "Interference", "DomainViolation", "InterferenceViolation", "TVGraph"]
 
