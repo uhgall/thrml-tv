@@ -22,14 +22,14 @@ class PottsGraphFactor(CategoricalEBMFactor):
     nodes: tuple[CategoricalNode, ...]
     edges: jnp.ndarray
     base_edge_weights: jnp.ndarray
-    lam: float
+    edge_penalty: float
 
     def __init__(
         self,
         nodes: Sequence[CategoricalNode],
         edges: jnp.ndarray,
         edge_weights: jnp.ndarray,
-        lam: float,
+        edge_penalty: float,
     ):
         if not nodes:
             raise ValueError("nodes must contain at least one CategoricalNode.")
@@ -49,14 +49,14 @@ class PottsGraphFactor(CategoricalEBMFactor):
         node_list = tuple(nodes)
         edges_jnp = jnp.asarray(edges_arr, dtype=jnp.int32)
         weights_jnp = jnp.asarray(weights_arr, dtype=jnp.float32)
-        lam_value = float(lam)
+        edge_penalty_value = float(edge_penalty)
 
         self.nodes = node_list
         self.edges = edges_jnp
         self.base_edge_weights = weights_jnp
-        self.lam = lam_value
+        self.edge_penalty = edge_penalty_value
 
-        scaled_weights = lam_value * weights_jnp
+        scaled_weights = edge_penalty_value * weights_jnp
 
         left_nodes = [node_list[int(idx)] for idx in edges_arr[:, 0].tolist()]
         right_nodes = [node_list[int(idx)] for idx in edges_arr[:, 1].tolist()]

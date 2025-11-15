@@ -24,7 +24,7 @@ def build_potts_coloring_model(
     channel_values: np.ndarray,
     edges_np: np.ndarray,
     edge_weights_np: np.ndarray,
-    lam: float,
+    edge_penalty: float,
     domain_mask_np: np.ndarray | None = None,
     domain_penalty: float = 10.0,
 ) -> tuple[FactorSamplingProgram, list[CategoricalNode]]:
@@ -41,7 +41,12 @@ def build_potts_coloring_model(
 
     factors = []
     if edges.shape[0] > 0:
-        potts_factor = PottsGraphFactor(nodes=nodes, edges=edges, edge_weights=edge_weights, lam=lam)
+        potts_factor = PottsGraphFactor(
+            nodes=nodes,
+            edges=edges,
+            edge_weights=edge_weights,
+            edge_penalty=edge_penalty,
+        )
         factors.append(potts_factor)
 
     if domain_mask_np is not None:

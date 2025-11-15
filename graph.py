@@ -266,7 +266,12 @@ def potts_data_from_tv_graph(
     )
 
 
-def potts_energy(colors: jnp.ndarray, edges: jnp.ndarray, edge_weights: jnp.ndarray, lam: float) -> jnp.ndarray:
+def potts_energy(
+    colors: jnp.ndarray,
+    edges: jnp.ndarray,
+    edge_weights: jnp.ndarray,
+    edge_penalty: float,
+) -> jnp.ndarray:
     """
     Compute the Potts-model energy for a given assignment.
     """
@@ -277,7 +282,7 @@ def potts_energy(colors: jnp.ndarray, edges: jnp.ndarray, edge_weights: jnp.ndar
     u = edges[:, 0]
     v = edges[:, 1]
     penalties = edge_weights[idx, colors[u], colors[v]]
-    return lam * jnp.sum(penalties)
+    return edge_penalty * jnp.sum(penalties)
 
 
 def conflict_count(colors: jnp.ndarray, edges: jnp.ndarray, edge_weights: jnp.ndarray) -> jnp.ndarray:

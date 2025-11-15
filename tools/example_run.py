@@ -1,14 +1,21 @@
+#!/usr/bin/env python3
 """
 Example execution script for the Potts interference sampler using toy data.
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+import sys
 
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from thrml.block_sampling import sample_blocks
 
@@ -18,7 +25,10 @@ from model import (
     build_potts_coloring_model,
     colors_to_block_state,
 )
-from tools.generate_subgraph import load_tv_graph
+try:  # pragma: no cover - allow running as script or module
+    from .generate_subgraph import load_tv_graph
+except ImportError:  # pragma: no cover
+    from tools.generate_subgraph import load_tv_graph
 from visualization import render_force_layout_html
 
 
@@ -26,9 +36,14 @@ def run_example(
     *,
     dataset: str | Path = "default",
     stop_energy: float = 0.0,
-    output_html_path: str | None = None,
+    output_html_path: str | Path | None = None,
     template_path: str | Path | None = None,
     dataset_name: str | None = None,
+    edge_penalty: float = 1.0,
+    domain_penalty: float = 15.0,
+    steps: int = 2000,
+    log_every: int = 20,
+    seed: int = 4269,
 ) -> None:
     """
     Run a Potts-model interference sampler using a dataset under ``input/``.
@@ -46,18 +61,22 @@ def run_example(
         Optional override for the HTML template used to render the visualization.
     dataset_name:
         Optional label for output artifacts; defaults to the dataset directory name.
+    edge_penalty:
+        Scale factor applied to the pairwise Potts edge penalties.
+    domain_penalty:
+        Penalty multiplier applied when assignments violate station-channel domains.
+    steps:
+        Maximum number of block-sampling iterations to run.
+    log_every:
+        Print progress every ``log_every`` iterations.
+    seed:
+        Random seed used for JAX PRNG initialisation.
     """
 
     dataset_path = Path(dataset)
     graph, _ = load_tv_graph(dataset_path)
 
     dataset_name = dataset_name or (dataset_path.name if dataset_path.name else "graph")
-
-    lam = 1.0
-    domain_penalty = 15.0
-    steps = 2000
-    log_every = 20
-    seed = 4269
 
     if output_html_path is None:
         output_html_path = f"force_animation_{dataset_name}.html"
@@ -81,7 +100,7 @@ def run_example(
         channel_values=channel_values,
         edges_np=edges_np,
         edge_weights_np=edge_weights_np,
-        lam=lam,
+        edge_penalty=edge_penalty,
         domain_mask_np=domain_mask_np,
         domain_penalty=domain_penalty,
     )
@@ -101,7 +120,7 @@ def run_example(
     node_indices = jnp.arange(N)
 
     def total_energy(color_assignments: jnp.ndarray) -> jnp.ndarray:
-        potts = potts_energy(color_assignments, edges_jax, edge_weights_jax, lam)
+        potts = potts_energy(color_assignments, edges_jax, edge_weights_jax, edge_penalty)
         domain_violation = jnp.logical_not(domain_mask[node_indices, color_assignments])
         penalty = domain_penalty * jnp.sum(domain_violation)
         return potts + penalty
@@ -267,6 +286,99 @@ def save_force_layout_animation(
     render_force_layout_html(data_payload, output_path, template_path=template_path)
 
 
+def _build_cli_parser() -> argparse.ArgumentParser:
+    """
+    Construct the CLI parser used for invoking the example sampler.
+    """
+    parser = argparse.ArgumentParser(
+        description="Run the Potts interference sampler on a dataset under ./input/."
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=Path("default"),
+        help="Subdirectory under ./input/ containing Domain.csv, Interference_Paired.csv, and parameters.csv (default: default).",
+    )
+    parser.add_argument(
+        "--stop-energy",
+        type=float,
+        default=0.0,
+        help="Stop once the instantaneous energy falls below this threshold (default: 0.0).",
+    )
+    parser.add_argument(
+        "--output-html",
+        type=Path,
+        default=None,
+        help="Destination path for the generated force-layout animation HTML.",
+    )
+    parser.add_argument(
+        "--template",
+        type=Path,
+        default=None,
+        help="Optional override for the force-layout HTML template.",
+    )
+    parser.add_argument(
+        "--dataset-name",
+        type=str,
+        default=None,
+        help="Override label used in logs and generated artifacts.",
+    )
+    parser.add_argument(
+        "--edge-penalty",
+        type=float,
+        default=1.0,
+        help="Scale factor applied to edge penalties (default: 1.0).",
+    )
+    parser.add_argument(
+        "--domain-penalty",
+        type=float,
+        default=15.0,
+        help="Penalty multiplier applied to domain violations (default: 15.0).",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=2000,
+        help="Maximum number of Gibbs sampling steps to run (default: 2000).",
+    )
+    parser.add_argument(
+        "--log-interval",
+        dest="log_every",
+        type=int,
+        default=20,
+        help="Print progress every N steps (default: 20).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=4269,
+        help="Random seed used for sampler initialisation (default: 4269).",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """
+    CLI entry-point compatible with other tools in this package.
+    """
+    parser = _build_cli_parser()
+    args = parser.parse_args(argv)
+
+    run_example(
+        dataset=args.input,
+        stop_energy=args.stop_energy,
+        output_html_path=args.output_html,
+        template_path=args.template,
+        dataset_name=args.dataset_name,
+        edge_penalty=args.edge_penalty,
+        domain_penalty=args.domain_penalty,
+        steps=args.steps,
+        log_every=args.log_every,
+        seed=args.seed,
+    )
+    return 0
+
+
 if __name__ == "__main__":
-    run_example()
+    raise SystemExit(main())
 

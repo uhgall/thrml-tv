@@ -137,7 +137,7 @@ Internal representation:
   - edges: list of unique unordered station pairs (i, j) (i != j).
   - For each edge (i, j), build a K x K penalty matrix W_ij:
     - W_ij[a, b] = penalty if station i uses channel a and station j uses channel b.
-    - For any disallowed pair (a, b) from CO, ADJ+1, ADJ-1, set W_ij[a, b] = lam.
+    - For any disallowed pair (a, b) from CO, ADJ+1, ADJ-1, set W_ij[a, b] = edge_penalty.
     - All other entries can be 0.
   - Depending on whether the constraints are symmetric or directional in the data, you may want to:
     - also set W_ij[b, a], or
@@ -154,7 +154,7 @@ We will pretend we are creating a small package with these files:
 - graph.py
 - potts_factor.py
 - model.py
-- example_run.py
+- tools/example_run.py
 
 You should output the contents of these files in one answer, clearly labeled:
 
@@ -233,8 +233,8 @@ Requirements:
   - Map c1 to a, c2 to b.
   - Get the pair key = (min(i, j), max(i, j)).
   - In the corresponding K x K matrix W:
-    - set W[a, b] = lam_default, where lam_default is some constant penalty (e.g., 1.0 for now).
-    - Optionally also set W[b, a] = lam_default for symmetry.
+    - set W[a, b] = edge_penalty_default, where edge_penalty_default is some constant penalty (e.g., 1.0 for now).
+    - Optionally also set W[b, a] = edge_penalty_default for symmetry.
     - Mark with:
       # TODO: confirm symmetry for interference constraints.
 - After processing all rows, convert this dictionary into:
@@ -242,7 +242,7 @@ Requirements:
   - edge_weight_tensors: list of W_ij matrices.
   Then convert to numpy arrays.
 
-You can choose to pass lam_default into this function or hardcode a default and let the THRML model scale it later. For now, you can return W_ij with entries 0 or 1 and multiply by lam in the PottsGraphFactor.
+You can choose to pass edge_penalty_default into this function or hardcode a default and let the THRML model scale it later. For now, you can return W_ij with entries 0 or 1 and multiply by the edge penalty in the PottsGraphFactor.
 
 3) Pure JAX helpers:
 
@@ -254,15 +254,15 @@ Using JAX (no THRML here), implement:
     def potts_energy(colors: jnp.ndarray,
                      edges: jnp.ndarray,
                      edge_weights: jnp.ndarray,
-                     lam: float) -> jnp.ndarray:
+                     edge_penalty: float) -> jnp.ndarray:
         """
         colors: shape (N,), int32 in [0, K)
         edges: shape (E, 2), int32 station indices
         edge_weights: shape (E, K, K), base penalty tables (0 or 1)
-        lam: float penalty scale
+        edge_penalty: float penalty scale
 
         Returns scalar energy:
-            E = lam * sum_e edge_weights[e, colors[u], colors[v]]
+            E = edge_penalty * sum_e edge_weights[e, colors[u], colors[v]]
         """
 
     def conflict_count(colors: jnp.ndarray,
@@ -308,12 +308,12 @@ This file defines a custom THRML discrete EBM factor that encodes all pairwise s
 Create:
 
     class PottsGraphFactor(DiscreteEBMFactor):
-        def __init__(self, nodes, edges, edge_weights, lam: float, **kwargs):
+        def __init__(self, nodes, edges, edge_weights, edge_penalty: float, **kwargs):
             """
             nodes: list of categorical nodes (one per station)
             edges: JAX array of shape (E, 2) with station indices
             edge_weights: JAX array of shape (E, K, K) with base penalties (0 or 1)
-            lam: float penalty scale
+            edge_penalty: float penalty scale
             """
 
 Responsibilities:
@@ -324,7 +324,7 @@ Key idea:
 - For each edge e = (i, j), we have a K x K matrix W_e (from edge_weights).
 - The energy contribution from this factor should be:
 
-    sum_e lam * W_e[ colors[i], colors[j] ]
+    sum_e edge_penalty * W_e[ colors[i], colors[j] ]
 
 so that the THRML global energy matches potts_energy.
 
@@ -337,7 +337,7 @@ Implementation steps (based on THRML’s discrete EBM pattern):
 
 - Follow that pattern but feed it:
   - the list of node pairs corresponding to edges.
-  - the tensor of edge_weights (scaled by lam if needed).
+  - the tensor of edge_weights (scaled by the edge penalty if needed).
 
 If `DiscreteEBMFactor` provides the energy computation, you may not need to write an `energy` method. If you do need to write one, implement it using `edges` and `edge_weights` exactly like potts_energy does.
 
@@ -374,13 +374,13 @@ Implement:
                                    channel_values,
                                    edges_np,
                                    edge_weights_np,
-                                   lam: float):
+                                   edge_penalty: float):
         """
         station_ids: numpy array of shape (N,)
         channel_values: numpy array of shape (K,)
         edges_np: numpy array of shape (E, 2) with station indices
         edge_weights_np: numpy array of shape (E, K, K)
-        lam: float penalty scale
+        edge_penalty: float penalty scale
 
         Returns:
             sampling_program: a THRML sampling program object
@@ -401,7 +401,7 @@ Steps inside:
     potts_factor = PottsGraphFactor(nodes=nodes,
                                     edges=edges_jax,
                                     edge_weights=edge_weights_jax,
-                                    lam=lam)
+                                    edge_penalty=edge_penalty)
 
 - Build a THRML sampling program:
   - Inspect the "Getting Started" discrete EBM example in the THRML docs.
@@ -424,7 +424,7 @@ Where the exact pattern is unclear, copy as closely as possible from the discret
     # TODO: check thrml docs for exact FactorSamplingProgram usage
 
 ================================================================
-STEP 4: example_run.py
+STEP 4: tools/example_run.py
 ================================================================
 
 This file should provide a simple, self-contained example run with no command line parsing.
@@ -475,7 +475,7 @@ Example structure:
     E = edges_np.shape[0]
 
     # Set parameters
-    lam = 1.0
+    edge_penalty = 1.0
     steps = 1000
     seed = 0
 
@@ -484,7 +484,7 @@ Example structure:
                                                          channel_values,
                                                          edges_np,
                                                          edge_weights_np,
-                                                         lam)
+                                                         edge_penalty)
 
     # Initialize colors
     key = jax.random.PRNGKey(seed)
@@ -495,7 +495,7 @@ Example structure:
     edge_weights_jax = jax.device_put(edge_weights_np)
 
     best_colors = colors
-    best_energy = potts_energy(colors, edges_jax, edge_weights_jax, lam)
+    best_energy = potts_energy(colors, edges_jax, edge_weights_jax, edge_penalty)
     print("init energy:", best_energy,
           "conflicts:", conflict_count(colors, edges_jax, edge_weights_jax))
 
@@ -511,7 +511,7 @@ Example structure:
         # TODO: adapt this to actual thrml sampling API.
 
         if t % 100 == 0:
-            E = potts_energy(colors, edges_jax, edge_weights_jax, lam)
+            E = potts_energy(colors, edges_jax, edge_weights_jax, edge_penalty)
             C = conflict_count(colors, edges_jax, edge_weights_jax)
             if E < best_energy:
                 best_energy = E
@@ -538,7 +538,7 @@ STEP 5: WHAT I EXPECT FROM YOU
    - graph.py
    - potts_factor.py
    - model.py
-   - example_run.py
+   - tools/example_run.py
 
 3) You must base PottsGraphFactor on the real discrete EBM base class (from thrml.models.discrete_ebm), following the pattern of CategoricalEBMFactor or equivalent.
 
