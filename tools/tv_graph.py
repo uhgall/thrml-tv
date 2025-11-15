@@ -45,7 +45,7 @@ class Interference:
 
 
 @dataclass
-class tv_graph:
+class TVGraph:
     """
     Container for stations and channel mappings derived from FCC input files.
     """
@@ -67,7 +67,7 @@ class tv_graph:
         seed_station: Station | int,
         channel_count: int,
         station_count: int,
-    ) -> "tv_graph":
+    ) -> "TVGraph":
         """
         Build a connected subgraph using breadth-first traversal from ``seed_station``.
         """
@@ -152,12 +152,12 @@ class tv_graph:
                 )
             new_station.interferences.sort(key=lambda item: (item.subject_channel, item.other_channel))
 
-        return tv_graph(
+        return TVGraph(
             stations=new_stations,
             channel_id_for_channel=new_channel_id_for_channel,
             channel_for_channel_id=list(channel_subset),
         )
 
 
-__all__ = ["Station", "Interference", "tv_graph"]
+__all__ = ["Station", "Interference", "TVGraph"]
 

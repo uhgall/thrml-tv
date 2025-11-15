@@ -12,46 +12,46 @@ import jax.numpy as jnp
 
 from thrml.block_sampling import sample_blocks
 
-from graph import (
-    conflict_count,
-    load_domain_csv,
-    load_interference_csv,
-    potts_energy,
-    random_initial_colors,
-)
+from graph import conflict_count, potts_data_from_tv_graph, potts_energy, random_initial_colors
 from model import (
     block_state_to_colors,
     build_potts_coloring_model,
     colors_to_block_state,
 )
+from tools.generate_subgraph import load_tv_graph
 from visualization import render_force_layout_html
 
 
 def run_example(
+    *,
+    dataset: str | Path = "default",
     stop_energy: float = 0.0,
     output_html_path: str | None = None,
-    *,
-    data_dir: str | Path = "input/test4",
-    symmetrize_constraints: bool = False,
     template_path: str | Path | None = None,
+    dataset_name: str | None = None,
 ) -> None:
     """
-    Run a Potts-model interference sampler on one of the bundled toy data sets.
+    Run a Potts-model interference sampler using a dataset under ``input/``.
 
     Parameters
     ----------
+    dataset:
+        Subdirectory inside ``input/`` to load (defaults to ``input/default``).
     stop_energy:
         Halt sampling early once the instantaneous energy is less than or equal to this threshold.
     output_html_path:
         Destination path for a self-contained d3-force HTML animation. When omitted, the name is inferred
-        from the data directory (`force_animation_<dataset>.html`).
-    data_dir:
-        Directory containing `Domain.csv` and `Interference_Paired.csv`.
-    symmetrize_constraints:
-        If True, directional constraints (ADJ+1 / ADJ-1) are automatically mirrored.
+        from ``dataset_name`` (`force_animation_<dataset>.html`).
     template_path:
         Optional override for the HTML template used to render the visualization.
+    dataset_name:
+        Optional label for output artifacts; defaults to the dataset directory name.
     """
+
+    dataset_path = Path(dataset)
+    graph, _ = load_tv_graph(dataset_path)
+
+    dataset_name = dataset_name or (dataset_path.name if dataset_path.name else "graph")
 
     lam = 1.0
     domain_penalty = 15.0
@@ -59,23 +59,19 @@ def run_example(
     log_every = 20
     seed = 4269
 
-    base_dir = Path(data_dir)
-    dataset_name = base_dir.name
-
     if output_html_path is None:
         output_html_path = f"force_animation_{dataset_name}.html"
 
-    domain_csv_path = base_dir / "Domain.csv"
-    interference_csv_path = base_dir / "Interference_Paired.csv"
-
-    station_ids, channel_values, domain_mask_np = load_domain_csv(str(domain_csv_path))
-    edges_np, edge_weights_np, edge_tags = load_interference_csv(
-        str(interference_csv_path),
-        station_ids,
-        channel_values,
-        symmetrize_constraints=symmetrize_constraints,
-        return_edge_metadata=True,
+    potts_inputs = potts_data_from_tv_graph(
+        graph,
     )
+
+    station_ids = potts_inputs.station_ids
+    channel_values = potts_inputs.channel_values
+    domain_mask_np = potts_inputs.domain_mask
+    edges_np = potts_inputs.edges
+    edge_weights_np = potts_inputs.edge_weights
+    edge_tags = potts_inputs.edge_tags
 
     N = station_ids.shape[0]
     K = channel_values.shape[0]
@@ -272,5 +268,5 @@ def save_force_layout_animation(
 
 
 if __name__ == "__main__":
-    run_example(data_dir="input/test10", symmetrize_constraints=True)
+    run_example()
 

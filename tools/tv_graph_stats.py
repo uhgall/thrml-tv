@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Inspect FCC interference datasets using in-memory tv_graph structures.
+Inspect FCC interference datasets using in-memory TVGraph structures.
 """
 
 from __future__ import annotations
@@ -11,10 +11,13 @@ from pathlib import Path
 from typing import Iterable
 
 from generate_subgraph import load_tv_graph
-from tv_graph import Station, tv_graph
+try:  # pragma: no cover - allow running as script or module
+    from .tv_graph import Station, TVGraph
+except ImportError:  # pragma: no cover
+    from tv_graph import Station, TVGraph
 
 
-def _iter_constraints(graph: tv_graph) -> Iterable[tuple[int, int, int, int, str]]:
+def _iter_constraints(graph: TVGraph) -> Iterable[tuple[int, int, int, int, str]]:
     """
     Yield directional constraints as (station_a, channel_a, station_b, channel_b, type).
     """
@@ -30,7 +33,7 @@ def _iter_constraints(graph: tv_graph) -> Iterable[tuple[int, int, int, int, str
                 )
 
 
-def _build_constraint_index(graph: tv_graph) -> dict[tuple[int, int], set[tuple[int, int]]]:
+def _build_constraint_index(graph: TVGraph) -> dict[tuple[int, int], set[tuple[int, int]]]:
     """
     Map each (station, subject_channel) to a set of partner tuples (peer_station, other_channel).
     """
@@ -44,7 +47,7 @@ def _build_constraint_index(graph: tv_graph) -> dict[tuple[int, int], set[tuple[
     return index
 
 
-def find_asymmetric_constraints(graph: tv_graph) -> list[tuple[int, int, int, int, str]]:
+def find_asymmetric_constraints(graph: TVGraph) -> list[tuple[int, int, int, int, str]]:
     """
     Identify directional constraints missing a reverse counterpart.
     """
@@ -60,9 +63,9 @@ def find_asymmetric_constraints(graph: tv_graph) -> list[tuple[int, int, int, in
     return missing
 
 
-def compute_graph_stats(graph: tv_graph) -> dict[str, object]:
+def compute_graph_stats(graph: TVGraph) -> dict[str, object]:
     """
-    Calculate descriptive statistics for a tv_graph instance.
+    Calculate descriptive statistics for a TVGraph instance.
     """
     stations = list(graph.stations.values())
     station_count = len(stations)
@@ -128,7 +131,7 @@ def compute_graph_stats(graph: tv_graph) -> dict[str, object]:
 
 
 def render_stats(
-    graph: tv_graph,
+    graph: TVGraph,
     stats: dict[str, object],
     *,
     top_k: int,
@@ -186,10 +189,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Summarise FCC interference datasets and verify constraint symmetry.",
     )
     parser.add_argument(
-        "--input-dir",
+        "--input",
         type=Path,
-        default=Path("input/fcc"),
-        help="Directory containing Domain.csv, Interference_Paired.csv, and parameters.csv.",
+        default=Path("default"),
+        help="Subdirectory under ./input/ containing Domain.csv, Interference_Paired.csv, and parameters.csv (default: input/default).",
     )
     parser.add_argument(
         "--top",
@@ -209,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    graph, _ = load_tv_graph(args.input_dir)
+    graph, _ = load_tv_graph(args.input)
     stats = compute_graph_stats(graph)
     render_stats(graph, stats, top_k=args.top)
 

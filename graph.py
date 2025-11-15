@@ -5,12 +5,16 @@ Utilities for parsing TV interference CSVs and evaluating Potts energies.
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+
+if TYPE_CHECKING:  # pragma: no cover
+    from tools.tv_graph import TVGraph
 
 
 def indices_from_station_ids(station_ids: np.ndarray) -> Dict[int, int]:
@@ -75,7 +79,6 @@ def load_interference_csv(
     channel_values: np.ndarray,
     penalty_value: float = 1.0,
     *,
-    symmetrize_constraints: bool = False,
     return_edge_metadata: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray] | Tuple[np.ndarray, np.ndarray, List[List[str]]]:
     """
@@ -91,9 +94,6 @@ def load_interference_csv(
         Array of channel values to map textual channels onto indices.
     penalty_value:
         Base penalty used for any constraint that does not include an explicit weight.
-    symmetrize_constraints:
-        If True, directional constraints such as ADJ+1 automatically register their inverse
-        (ADJ-1) on the opposing direction of the same edge.
     return_edge_metadata:
         If True, also return a list of constraint tags per edge for downstream visualization.
     """
@@ -155,9 +155,6 @@ def load_interference_csv(
 
                 tags = edge_constraint_tags.setdefault(edge, set())
                 tags.add(constraint_type)
-                if symmetrize_constraints and constraint_type in {"ADJ+1", "ADJ-1"}:
-                    inverse = "ADJ-1" if constraint_type == "ADJ+1" else "ADJ+1"
-                    tags.add(inverse)
 
     if not edge_penalties:
         return np.zeros((0, 2), dtype=np.int32), np.zeros((0, n_channels, n_channels), dtype=np.float32)
@@ -171,6 +168,102 @@ def load_interference_csv(
         return edges, edge_weight_tensors, edge_tags
 
     return edges, edge_weight_tensors
+
+
+@dataclass(frozen=True)
+class PottsGraphData:
+    """
+    Container for Potts-model inputs derived from an in-memory ``TVGraph``.
+    """
+
+    station_ids: np.ndarray
+    channel_values: np.ndarray
+    domain_mask: np.ndarray
+    edges: np.ndarray
+    edge_weights: np.ndarray
+    edge_tags: List[List[str]]
+
+
+def potts_data_from_tv_graph(
+    graph: "TVGraph",
+    *,
+    penalty_value: float = 1.0,
+) -> PottsGraphData:
+    """
+    Convert a ``TVGraph`` instance into Potts-model arrays compatible with THRML.
+    """
+
+    station_items = sorted(graph.stations.items(), key=lambda item: item[0])
+    station_ids = np.asarray([int(station_id) for station_id, _ in station_items], dtype=np.int32)
+    station_index = {station_id: idx for idx, station_id in enumerate(station_ids.tolist())}
+
+    channel_values = np.asarray(list(graph.channel_for_channel_id), dtype=np.int32)
+    channel_index = {int(channel): idx for idx, channel in enumerate(channel_values.tolist())}
+
+    num_stations = station_ids.shape[0]
+    num_channels = channel_values.shape[0]
+
+    domain_mask = np.zeros((num_stations, num_channels), dtype=bool)
+    for station_id, station in station_items:
+        row = station_index[int(station_id)]
+        for channel in station.domain:
+            if channel not in channel_index:
+                raise KeyError(f"Channel {channel} not present in graph channel set.")
+            domain_mask[row, channel_index[int(channel)]] = True
+
+    edge_penalties: Dict[Tuple[int, int], np.ndarray] = {}
+    edge_tags: Dict[Tuple[int, int], set[str]] = {}
+
+    for station_id, station in station_items:
+        idx_a = station_index[int(station_id)]
+        for interference in station.interferences:
+            subject_channel = int(interference.subject_channel)
+            other_channel = int(interference.other_channel)
+            if subject_channel not in channel_index or other_channel not in channel_index:
+                raise KeyError(
+                    f"Constraint channels ({subject_channel}, {other_channel}) missing from graph channel set."
+                )
+
+            chan_idx_a = channel_index[subject_channel]
+            chan_idx_b = channel_index[other_channel]
+
+            for partner in interference.stations:
+                idx_b = station_index.get(int(partner.station_id))
+                if idx_b is None or idx_a == idx_b:
+                    continue
+
+                edge = (idx_a, idx_b) if idx_a < idx_b else (idx_b, idx_a)
+                chan_i, chan_j = (chan_idx_a, chan_idx_b) if edge[0] == idx_a else (chan_idx_b, chan_idx_a)
+
+                penalties = edge_penalties.get(edge)
+                if penalties is None:
+                    penalties = np.zeros((num_channels, num_channels), dtype=np.float32)
+                    edge_penalties[edge] = penalties
+
+                penalties[chan_i, chan_j] = max(penalties[chan_i, chan_j], float(penalty_value))
+                penalties[chan_j, chan_i] = max(penalties[chan_j, chan_i], float(penalty_value))
+
+                tags = edge_tags.setdefault(edge, set())
+                tags.add(interference.constraint_type)
+
+    if not edge_penalties:
+        edges = np.zeros((0, 2), dtype=np.int32)
+        edge_weight_tensors = np.zeros((0, num_channels, num_channels), dtype=np.float32)
+        tags_list: List[List[str]] = []
+    else:
+        edges_sorted = sorted(edge_penalties.keys())
+        edges = np.asarray(edges_sorted, dtype=np.int32)
+        edge_weight_tensors = np.stack([edge_penalties[edge] for edge in edges_sorted], axis=0)
+        tags_list = [sorted(edge_tags.get(edge, set())) for edge in edges_sorted]
+
+    return PottsGraphData(
+        station_ids=station_ids,
+        channel_values=channel_values,
+        domain_mask=domain_mask,
+        edges=edges,
+        edge_weights=edge_weight_tensors,
+        edge_tags=tags_list,
+    )
 
 
 def potts_energy(colors: jnp.ndarray, edges: jnp.ndarray, edge_weights: jnp.ndarray, lam: float) -> jnp.ndarray:

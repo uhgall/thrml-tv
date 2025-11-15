@@ -3,7 +3,7 @@
 Utilities for building smaller FCC interference datasets.
 
 This module parses `Domain.csv`, `Interference_Paired.csv`, and `parameters.csv`
-files from an FCC input directory into a structured `tv_graph`. It provides
+files from an FCC input directory into a structured `TVGraph`. It provides
 helpers to generate connected subgraphs with limited station and channel counts,
 and it can emit trimmed CSV files plus per-station interference counts.
 """
@@ -13,19 +13,44 @@ from __future__ import annotations
 import argparse
 import csv
 from collections import defaultdict
+import re
 from pathlib import Path
 from typing import Iterable
 
-from tv_graph import Interference, Station, tv_graph
+try:  # pragma: no cover - package vs script execution
+    from .tv_graph import Interference, Station, TVGraph
+except ImportError:  # pragma: no cover
+    from tv_graph import Interference, Station, TVGraph
 
 
-def load_tv_graph(input_dir: str | Path) -> tuple[tv_graph, list[str]]:
+def _resolve_input_directory(path: str | Path) -> Path:
     """
-    Parse FCC CSV inputs under ``input_dir`` into a ``tv_graph`` instance.
+    Ensure the provided path refers to a subdirectory within the repository's ./input directory.
     """
-    root = Path(input_dir)
-    if not root.exists():
-        raise FileNotFoundError(f"{root} does not exist.")
+    base = Path("input").resolve()
+    candidate = Path(path)
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+    else:
+        parts = candidate.parts
+        if parts and parts[0] == "input":
+            resolved = (Path.cwd() / candidate).resolve()
+        else:
+            resolved = (base / candidate).resolve()
+    try:
+        resolved.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"Input directory must be inside {base}, received {resolved}") from exc
+    if not resolved.exists():
+        raise FileNotFoundError(f"Input directory not found: {resolved}")
+    return resolved
+
+
+def load_tv_graph(input_dir: str | Path) -> tuple[TVGraph, list[str]]:
+    """
+    Parse FCC CSV inputs residing under the repository ``input/`` directory into a ``TVGraph``.
+    """
+    root = _resolve_input_directory(input_dir)
 
     domain_path = root / "Domain.csv"
     interference_path = root / "Interference_Paired.csv"
@@ -52,7 +77,7 @@ def load_tv_graph(input_dir: str | Path) -> tuple[tv_graph, list[str]]:
 
     _populate_interferences(interference_path, stations)
 
-    graph = tv_graph(
+    graph = TVGraph(
         stations=stations,
         channel_id_for_channel=channel_id_for_channel,
         channel_for_channel_id=channel_for_channel_id,
@@ -60,7 +85,7 @@ def load_tv_graph(input_dir: str | Path) -> tuple[tv_graph, list[str]]:
     return graph, params_header
 
 
-def save_interference_counts(graph: tv_graph, output_path: str | Path) -> None:
+def save_interference_counts(graph: TVGraph, output_path: str | Path) -> None:
     """
     Persist a CSV containing per-station interference counts sorted by constraint volume.
     """
@@ -80,7 +105,7 @@ def save_interference_counts(graph: tv_graph, output_path: str | Path) -> None:
         writer.writerows((station_id, count) for station_id, count in rows)
 
 
-def save_domain_csv(graph: tv_graph, output_path: str | Path) -> None:
+def save_domain_csv(graph: TVGraph, output_path: str | Path) -> None:
     """
     Write a DOMAIN file representing the station-channel domains for ``graph``.
     """
@@ -99,7 +124,7 @@ def save_domain_csv(graph: tv_graph, output_path: str | Path) -> None:
             writer.writerow(row)
 
 
-def save_interference_csv(graph: tv_graph, output_path: str | Path) -> None:
+def save_interference_csv(graph: TVGraph, output_path: str | Path) -> None:
     """
     Write an Interference_Paired-style CSV for ``graph``.
     """
@@ -125,7 +150,7 @@ def save_interference_csv(graph: tv_graph, output_path: str | Path) -> None:
 
 
 def save_parameters_csv(
-    graph: tv_graph,
+    graph: TVGraph,
     header: list[str],
     output_path: str | Path,
 ) -> None:
@@ -154,7 +179,7 @@ def save_parameters_csv(
 
 
 def save_subgraph_files(
-    graph: tv_graph,
+    graph: TVGraph,
     parameters_header: list[str],
     output_dir: Path,
 ) -> dict[str, Path]:
@@ -179,6 +204,51 @@ def save_subgraph_files(
         "parameters": parameters_path,
         "counts": counts_path,
     }
+
+
+def _sanitize_label(text: str) -> str:
+    """
+    Collapse an arbitrary string into a filesystem-friendly label.
+    """
+    normalized = text.replace("/", "-").replace("\\", "-")
+    normalized = re.sub(r"[^A-Za-z0-9-]+", "-", normalized)
+    normalized = re.sub(r"-{2,}", "-", normalized)
+    return normalized.strip("-") or "dataset"
+
+
+def _resolve_output_dir(
+    input_dir: Path,
+    seed_station: int,
+    station_count: int,
+    channel_count: int,
+) -> Path:
+    """
+    Determine an output subdirectory inside ./input/ that encodes configuration parameters.
+    """
+    base_root = Path("input")
+    base_root.mkdir(parents=True, exist_ok=True)
+
+    input_dir_abs = input_dir.resolve()
+    base_root_abs = base_root.resolve()
+
+    try:
+        relative_segment = input_dir_abs.relative_to(base_root_abs)
+        source_label = _sanitize_label(str(relative_segment))
+    except ValueError:
+        source_label = _sanitize_label(input_dir_abs.stem or input_dir_abs.name)
+
+    descriptor = _sanitize_label(
+        f"{source_label}_seed{seed_station}_st{station_count}_ch{channel_count}"
+    )
+    if not descriptor:
+        descriptor = "subset"
+
+    candidate = base_root / descriptor
+    suffix = 2
+    while candidate.exists():
+        candidate = base_root / f"{descriptor}-{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _load_domain(path: Path) -> tuple[dict[int, list[int]], set[int]]:
@@ -360,10 +430,10 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         description="Generate connected subgraphs from FCC interference datasets.",
     )
     parser.add_argument(
-        "--input-dir",
+        "--input",
         type=Path,
-        default=Path("input/fcc"),
-        help="Directory containing Domain.csv, Interference_Paired.csv, and parameters.csv.",
+        default=Path("default"),
+        help="Subdirectory under ./input/ containing Domain.csv, Interference_Paired.csv, and parameters.csv (default: input/default).",
     )
     parser.add_argument(
         "--seed-station",
@@ -383,12 +453,6 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         required=True,
         help="Number of channels to retain (prefix of the global channel list).",
     )
-    parser.add_argument(
-        "--output-path",
-        type=Path,
-        required=True,
-        help="Output directory (relative paths are placed under ./output).",
-    )
     return parser
 
 
@@ -399,12 +463,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_cli_parser()
     args = parser.parse_args(argv)
 
-    graph, params_header = load_tv_graph(args.input_dir)
+    input_dir = _resolve_input_directory(args.input)
+
+    graph, params_header = load_tv_graph(input_dir)
     subgraph = graph.make_subgraph(args.seed_station, args.channel_count, args.station_count)
 
-    output_dir = args.output_path
-    if not output_dir.is_absolute():
-        output_dir = Path("output") / output_dir
+    output_dir = _resolve_output_dir(
+        input_dir,
+        args.seed_station,
+        args.station_count,
+        args.channel_count,
+    )
 
     paths = save_subgraph_files(subgraph, params_header, output_dir)
 
