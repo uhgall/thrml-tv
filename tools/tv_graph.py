@@ -5,6 +5,7 @@ Core data structures for representing FCC interference graphs.
 from __future__ import annotations
 
 import csv
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -115,6 +116,173 @@ class TVGraph:
             self._domain_mask[st.station_index, st.domain_indices] = True
 
         self._load_interferences(root / "Interference_Paired.csv")
+
+    def save_sub_graph(
+        self,
+        seed_station: int = 87,
+        station_limit: int = 5,
+        channel_limit: int = 7,
+    ) -> Path:
+        """
+        Persist a BFS-limited subset of the current graph to ``input/``.
+
+        Parameters
+        ----------
+        seed_station:
+            FCC station identifier to start the breadth-first traversal.
+        station_limit:
+            Maximum number of stations to include in the exported dataset.
+        channel_limit:
+            Maximum number of unique channels to retain across the subset.
+
+        Returns
+        -------
+        Path
+            Directory path created under ``input/`` containing ``Domain.csv``,
+            ``parameters.csv``, and ``Interference_Paired.csv`` for the subset.
+        """
+        if station_limit <= 0:
+            raise ValueError("station_limit must be positive.")
+        if channel_limit <= 0:
+            raise ValueError("channel_limit must be positive.")
+
+        seed_station = int(seed_station)
+        if seed_station not in self.stations_by_id:
+            raise KeyError(f"Seed station {seed_station} not present in graph.")
+
+        visited: list[int] = []
+        seen: set[int] = set()
+        queue: deque[int] = deque([seed_station])
+
+        while queue and len(visited) < station_limit:
+            current = queue.popleft()
+            if current in seen:
+                continue
+            seen.add(current)
+            visited.append(current)
+
+            station = self.station(current)
+            neighbors = {
+                self.station_id_for_index(idx)
+                for interference in station.interferences
+                for idx in interference.station_indices
+            }
+            for neighbor in sorted(neighbors):
+                if neighbor not in seen and neighbor not in queue:
+                    queue.append(neighbor)
+
+        if len(visited) < station_limit:
+            raise ValueError(
+                f"Only discovered {len(visited)} station(s) reachable from seed {seed_station}, "
+                f"fewer than requested station_limit={station_limit}."
+            )
+
+        station_ids = visited
+        station_set = set(station_ids)
+
+        # Determine channel subset ensuring each station retains at least one channel.
+        selected_channel_set: set[int] = set()
+
+        for station_id in station_ids:
+            station = self.station(station_id)
+            if not station.domain:
+                raise ValueError(f"Station {station_id} has an empty domain.")
+
+            if any(channel in selected_channel_set for channel in station.domain):
+                continue
+
+            for channel in station.domain:
+                if channel not in selected_channel_set:
+                    selected_channel_set.add(channel)
+                    break
+            else:
+                raise ValueError(f"Unable to allocate a channel for station {station_id}.")
+
+        if len(selected_channel_set) > channel_limit:
+            raise ValueError(
+                f"Channel limit {channel_limit} is insufficient; "
+                f"requires at least {len(selected_channel_set)} unique channels."
+            )
+
+        if len(selected_channel_set) < channel_limit:
+            all_candidate_channels = sorted(
+                {
+                    channel
+                    for station_id in station_ids
+                    for channel in self.station(station_id).domain
+                }
+            )
+            for channel in all_candidate_channels:
+                if channel in selected_channel_set:
+                    continue
+                selected_channel_set.add(channel)
+                if len(selected_channel_set) >= channel_limit:
+                    break
+
+        if len(selected_channel_set) < channel_limit:
+            raise ValueError(
+                f"Only {len(selected_channel_set)} unique channels available across the selected stations; "
+                f"cannot satisfy channel_limit={channel_limit}."
+            )
+
+        if not selected_channel_set:
+            raise ValueError("Unable to identify any channels for the sub-graph.")
+
+        output_dir = self.dataset_root.parent / f"{self.dataset_root.name}-seed{seed_station}-st{station_limit}-ch{channel_limit}"
+        output_dir.mkdir(parents=True, exist_ok=False)
+
+        domain_path = output_dir / "Domain.csv"
+        with domain_path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            for station_id in station_ids:
+                station = self.station(station_id)
+                domain_subset = [channel for channel in station.domain if channel in selected_channel_set]
+                if not domain_subset:
+                    raise ValueError(
+                        f"Station {station_id} does not retain any channels within the selected subset."
+                    )
+                writer.writerow(["DOMAIN", station_id, *domain_subset])
+
+        params_path = output_dir / "parameters.csv"
+        with params_path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(self.parameters_header)
+            for station_id in station_ids:
+                station = self.station(station_id)
+                row = [station.attrs.get(column, "") for column in self.parameters_header]
+                writer.writerow(row)
+
+        interference_path = output_dir / "Interference_Paired.csv"
+        with interference_path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            for station_id in station_ids:
+                station = self.station(station_id)
+                for interference in station.interferences:
+                    if interference.subject_channel not in selected_channel_set:
+                        continue
+                    if interference.other_channel not in selected_channel_set:
+                        continue
+
+                    partners: list[int] = []
+                    for idx in interference.station_indices:
+                        partner_id = self.station_id_for_index(idx)
+                        if partner_id in station_set:
+                            partners.append(partner_id)
+                    if not partners:
+                        continue
+                    partners.sort()
+
+                    writer.writerow(
+                        [
+                            interference.constraint_type,
+                            interference.subject_channel,
+                            interference.other_channel,
+                            station_id,
+                            *partners,
+                        ]
+                    )
+
+        return output_dir
 
     def station(self, station_id: int) -> Station:
         """
