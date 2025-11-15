@@ -27,6 +27,8 @@ class Station:
     lat: float | None = None
     lon: float | None = None
     attrs: dict[str, str] = field(default_factory=dict)
+    post_attrs: dict[str, str] = field(default_factory=dict)
+    new_channel: int | None = None
 
     @property
     def domain_indices(self) -> list[int]:
@@ -87,16 +89,25 @@ class TVGraph:
         params_header, params_by_station = self._load_parameters(root / "parameters.csv")
         self.parameters_header = list(params_header)
 
+        (
+            post_params_header,
+            post_params_by_station,
+        ) = self._load_parameters(root / "post_auction_parameters.csv")
+        self.post_parameters_header = list(post_params_header)
+
         # Create Station objects with associated parameters.
         stations: dict[int, Station] = {}
         for station_id, domain_values in station_domains.items():
             station_params = params_by_station.get(station_id, {})
+            post_params = post_params_by_station.get(station_id, {})
             station = Station(
                 station_id=station_id,
                 domain=domain_values,
                 lat=self._parse_float(station_params.get("Lat")),
                 lon=self._parse_float(station_params.get("Lon")),
                 attrs=dict(station_params),
+                post_attrs=dict(post_params),
+                new_channel=self._parse_optional_int(post_params.get("Ch")),
             )
             station.set_domain_indices(self.channel_id_for_channel[ch] for ch in domain_values)
             stations[station_id] = station
@@ -122,6 +133,7 @@ class TVGraph:
         seed_station: int = 87,
         station_limit: int = 5,
         channel_limit: int = 7,
+        new_channel_only: bool = False,
     ) -> Path:
         """
         Persist a BFS-limited subset of the current graph to ``input/``.
@@ -134,101 +146,136 @@ class TVGraph:
             Maximum number of stations to include in the exported dataset.
         channel_limit:
             Maximum number of unique channels to retain across the subset.
+        new_channel_only:
+            When ``True``, ignore BFS parameters and emit a subgraph consisting of
+            every station that has a post-auction channel assignment. Domains are
+            intersected with the set of observed post-auction channels and the
+            resulting files are filtered accordingly.
 
         Returns
         -------
         Path
             Directory path created under ``input/`` containing ``Domain.csv``,
-            ``parameters.csv``, and ``Interference_Paired.csv`` for the subset.
+            ``parameters.csv``, ``post_auction_parameters.csv``, and
+            ``Interference_Paired.csv`` for the subset.
         """
-        if station_limit <= 0:
-            raise ValueError("station_limit must be positive.")
-        if channel_limit <= 0:
-            raise ValueError("channel_limit must be positive.")
-
-        seed_station = int(seed_station)
-        if seed_station not in self.stations_by_id:
-            raise KeyError(f"Seed station {seed_station} not present in graph.")
-
-        visited: list[int] = []
-        seen: set[int] = set()
-        queue: deque[int] = deque([seed_station])
-
-        while queue and len(visited) < station_limit:
-            current = queue.popleft()
-            if current in seen:
-                continue
-            seen.add(current)
-            visited.append(current)
-
-            station = self.station(current)
-            neighbors = {
-                self.station_id_for_index(idx)
-                for interference in station.interferences
-                for idx in interference.station_indices
+        if new_channel_only:
+            station_ids = [
+                station_id
+                for station_id in self.station_ids_by_index
+                if self.stations_by_id[station_id].new_channel is not None
+            ]
+            if not station_ids:
+                raise ValueError("No stations contain a post-auction channel assignment.")
+            selected_channel_set = {
+                self.stations_by_id[station_id].new_channel
+                for station_id in station_ids
+                if self.stations_by_id[station_id].new_channel is not None
             }
-            for neighbor in sorted(neighbors):
-                if neighbor not in seen and neighbor not in queue:
-                    queue.append(neighbor)
+            selected_channel_set = {channel for channel in selected_channel_set if channel is not None}
+            if not selected_channel_set:
+                raise ValueError("No usable post-auction channels located in dataset.")
+            station_ids = list(station_ids)
+            output_dir = (
+                self.dataset_root.parent
+                / f"{self.dataset_root.name}-post-auction-{len(station_ids)}st-{len(selected_channel_set)}ch"
+            )
+        else:
+            if station_limit <= 0:
+                raise ValueError("station_limit must be positive.")
+            if channel_limit <= 0:
+                raise ValueError("channel_limit must be positive.")
 
-        if len(visited) < station_limit:
-            raise ValueError(
-                f"Only discovered {len(visited)} station(s) reachable from seed {seed_station}, "
-                f"fewer than requested station_limit={station_limit}."
+            seed_station = int(seed_station)
+            if seed_station not in self.stations_by_id:
+                raise KeyError(f"Seed station {seed_station} not present in graph.")
+
+            visited: list[int] = []
+            seen: set[int] = set()
+            queue: deque[int] = deque([seed_station])
+
+            while queue and len(visited) < station_limit:
+                current = queue.popleft()
+                if current in seen:
+                    continue
+                seen.add(current)
+                visited.append(current)
+
+                station = self.station(current)
+                neighbors = {
+                    self.station_id_for_index(idx)
+                    for interference in station.interferences
+                    for idx in interference.station_indices
+                }
+                for neighbor in sorted(neighbors):
+                    if neighbor not in seen and neighbor not in queue:
+                        queue.append(neighbor)
+
+            if len(visited) < station_limit:
+                raise ValueError(
+                    f"Only discovered {len(visited)} station(s) reachable from seed {seed_station}, "
+                    f"fewer than requested station_limit={station_limit}."
+                )
+
+            station_ids = visited
+            selected_channel_set: set[int] = set()
+
+            for station_id in station_ids:
+                station = self.station(station_id)
+                if not station.domain:
+                    raise ValueError(f"Station {station_id} has an empty domain.")
+
+                if any(channel in selected_channel_set for channel in station.domain):
+                    continue
+
+                for channel in station.domain:
+                    if channel not in selected_channel_set:
+                        selected_channel_set.add(channel)
+                        break
+                else:
+                    raise ValueError(f"Unable to allocate a channel for station {station_id}.")
+
+            if len(selected_channel_set) > channel_limit:
+                raise ValueError(
+                    f"Channel limit {channel_limit} is insufficient; "
+                    f"requires at least {len(selected_channel_set)} unique channels."
+                )
+
+            if len(selected_channel_set) < channel_limit:
+                all_candidate_channels = sorted(
+                    {
+                        channel
+                        for station_id in station_ids
+                        for channel in self.station(station_id).domain
+                    }
+                )
+                for channel in all_candidate_channels:
+                    if channel in selected_channel_set:
+                        continue
+                    selected_channel_set.add(channel)
+                    if len(selected_channel_set) >= channel_limit:
+                        break
+
+            if len(selected_channel_set) < channel_limit:
+                raise ValueError(
+                    f"Only {len(selected_channel_set)} unique channels available across the selected stations; "
+                    f"cannot satisfy channel_limit={channel_limit}."
+                )
+
+            if not selected_channel_set:
+                raise ValueError("Unable to identify any channels for the sub-graph.")
+
+            output_dir = (
+                self.dataset_root.parent
+                / f"{self.dataset_root.name}-seed{seed_station}-st{station_limit}-ch{channel_limit}"
             )
 
-        station_ids = visited
         station_set = set(station_ids)
 
-        # Determine channel subset ensuring each station retains at least one channel.
-        selected_channel_set: set[int] = set()
+        selected_channel_set = set(selected_channel_set)
+        if new_channel_only and not selected_channel_set:
+            raise ValueError("Post-auction subgraph requires at least one valid channel.")
 
-        for station_id in station_ids:
-            station = self.station(station_id)
-            if not station.domain:
-                raise ValueError(f"Station {station_id} has an empty domain.")
-
-            if any(channel in selected_channel_set for channel in station.domain):
-                continue
-
-            for channel in station.domain:
-                if channel not in selected_channel_set:
-                    selected_channel_set.add(channel)
-                    break
-            else:
-                raise ValueError(f"Unable to allocate a channel for station {station_id}.")
-
-        if len(selected_channel_set) > channel_limit:
-            raise ValueError(
-                f"Channel limit {channel_limit} is insufficient; "
-                f"requires at least {len(selected_channel_set)} unique channels."
-            )
-
-        if len(selected_channel_set) < channel_limit:
-            all_candidate_channels = sorted(
-                {
-                    channel
-                    for station_id in station_ids
-                    for channel in self.station(station_id).domain
-                }
-            )
-            for channel in all_candidate_channels:
-                if channel in selected_channel_set:
-                    continue
-                selected_channel_set.add(channel)
-                if len(selected_channel_set) >= channel_limit:
-                    break
-
-        if len(selected_channel_set) < channel_limit:
-            raise ValueError(
-                f"Only {len(selected_channel_set)} unique channels available across the selected stations; "
-                f"cannot satisfy channel_limit={channel_limit}."
-            )
-
-        if not selected_channel_set:
-            raise ValueError("Unable to identify any channels for the sub-graph.")
-
-        output_dir = self.dataset_root.parent / f"{self.dataset_root.name}-seed{seed_station}-st{station_limit}-ch{channel_limit}"
         output_dir.mkdir(parents=True, exist_ok=False)
 
         domain_path = output_dir / "Domain.csv"
@@ -250,6 +297,21 @@ class TVGraph:
             for station_id in station_ids:
                 station = self.station(station_id)
                 row = [station.attrs.get(column, "") for column in self.parameters_header]
+                writer.writerow(row)
+
+        post_params_path = output_dir / "post_auction_parameters.csv"
+        with post_params_path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(self.post_parameters_header)
+            for station_id in station_ids:
+                station = self.station(station_id)
+                row: list[str] = []
+                for column in self.post_parameters_header:
+                    if column == "FacID":
+                        value = station.post_attrs.get(column) or str(station.station_id)
+                    else:
+                        value = station.post_attrs.get(column, "")
+                    row.append(value)
                 writer.writerow(row)
 
         interference_path = output_dir / "Interference_Paired.csv"
@@ -493,12 +555,15 @@ class TVGraph:
                 if not row:
                     continue
                 if header is None:
-                    if row[0].strip() == "FacID":
-                        header = [value.strip() for value in row]
+                    first_cell = TVGraph._strip_bom(row[0].strip())
+                    if first_cell == "FacID":
+                        header = [TVGraph._strip_bom(value.strip()) for value in row]
                     continue
                 if len(row) < len(header):
                     row = row + [""] * (len(header) - len(row))
-                values = {header[i]: row[i].strip() for i in range(len(header))}
+                values = {
+                    header[i]: TVGraph._strip_bom(row[i].strip()) for i in range(len(header))
+                }
                 fac_id_raw = values.get("FacID")
                 if not fac_id_raw:
                     continue
@@ -535,6 +600,24 @@ class TVGraph:
             return float(value)
         except ValueError:
             return None
+
+    @staticmethod
+    def _parse_optional_int(value: str | None) -> int | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _strip_bom(value: str) -> str:
+        if value.startswith("\ufeff"):
+            return value.lstrip("\ufeff")
+        return value
 
 
 __all__ = ["Station", "Interference", "TVGraph"]

@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=7,
         help="Maximum number of unique channels to retain (default: 7).",
     )
+    parser.add_argument(
+        "--new-channel-only",
+        action="store_true",
+        help="Export every station with a post-auction channel assignment instead of running BFS.",
+    )
     return parser
 
 
@@ -54,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         seed_station=args.seed,
         station_limit=args.stations,
         channel_limit=args.channels,
+        new_channel_only=args.new_channel_only,
     )
     print(f"Subgraph saved to: {output_dir}")
     return 0
