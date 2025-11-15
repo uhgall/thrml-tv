@@ -19,7 +19,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from thrml.block_sampling import sample_blocks
 
-from graph import conflict_count, potts_data_from_tv_graph, potts_energy, random_initial_colors
+from graph import conflict_count, potts_energy, random_initial_colors
 from model import (
     block_state_to_colors,
     build_potts_coloring_model,
@@ -81,29 +81,21 @@ def run_example(
     if output_html_path is None:
         output_html_path = f"force_animation_{dataset_name}.html"
 
-    potts_inputs = potts_data_from_tv_graph(
+    sampling_program, nodes, potts_data = build_potts_coloring_model(
         graph,
+        edge_penalty=edge_penalty,
+        domain_penalty=domain_penalty,
     )
 
-    station_ids = potts_inputs.station_ids
-    channel_values = potts_inputs.channel_values
-    domain_mask_np = potts_inputs.domain_mask
-    edges_np = potts_inputs.edges
-    edge_weights_np = potts_inputs.edge_weights
-    edge_tags = potts_inputs.edge_tags
+    station_ids = potts_data["station_ids"]
+    channel_values = potts_data["channel_values"]
+    domain_mask_np = potts_data["domain_mask"]
+    edges_np = potts_data["edges"]
+    edge_weights_np = potts_data["edge_weights"]
+    edge_tags = potts_data["edge_tags"]
 
     N = station_ids.shape[0]
     K = channel_values.shape[0]
-
-    sampling_program, nodes = build_potts_coloring_model(
-        station_ids=station_ids,
-        channel_values=channel_values,
-        edges_np=edges_np,
-        edge_weights_np=edge_weights_np,
-        edge_penalty=edge_penalty,
-        domain_mask_np=domain_mask_np,
-        domain_penalty=domain_penalty,
-    )
 
     free_blocks = sampling_program.gibbs_spec.free_blocks
     domain_mask = jnp.asarray(domain_mask_np, dtype=bool)

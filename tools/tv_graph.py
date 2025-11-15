@@ -6,6 +6,9 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from typing import Dict, List, Tuple
+
+import numpy as np
 
 
 @dataclass
@@ -61,6 +64,104 @@ class TVGraph:
         if station_id not in self.stations:
             raise KeyError(f"Station {station_id} not present in graph.")
         return self.stations[station_id]
+
+    def ordered_station_items(self) -> List[tuple[int, Station]]:
+        """
+        Stations sorted by identifier to stabilise downstream array layouts.
+        """
+        return sorted(self.stations.items(), key=lambda item: item[0])
+
+    def ordered_station_ids(self) -> np.ndarray:
+        """
+        Station identifiers sorted in ascending order.
+        """
+        return np.asarray([station_id for station_id, _ in self.ordered_station_items()], dtype=np.int32)
+
+    def channel_values(self) -> np.ndarray:
+        """
+        Channel values in the order encoded by ``channel_for_channel_id``.
+        """
+        return np.asarray(self.channel_for_channel_id, dtype=np.int32)
+
+    def build_channel_index(self) -> dict[int, int]:
+        """
+        Mapping from channel value to its contiguous index.
+        """
+        return {int(channel): idx for idx, channel in enumerate(self.channel_for_channel_id)}
+
+    def station_index(self) -> dict[int, int]:
+        """
+        Mapping from station identifier to its contiguous index.
+        """
+        return {int(station_id): idx for idx, station_id in enumerate(self.ordered_station_ids().tolist())}
+
+    def domain_mask(self) -> np.ndarray:
+        """
+        Boolean mask encoding station -> allowed channel assignments.
+        """
+        station_items = self.ordered_station_items()
+        station_index = {station_id: idx for idx, (station_id, _) in enumerate(station_items)}
+        channel_values = self.channel_values()
+        channel_index = {int(channel): idx for idx, channel in enumerate(channel_values.tolist())}
+        num_stations = len(station_items)
+        num_channels = channel_values.shape[0]
+        mask = np.zeros((num_stations, num_channels), dtype=bool)
+        for station_id, station in station_items:
+            row = station_index[int(station_id)]
+            for channel in station.domain:
+                if channel not in channel_index:
+                    raise KeyError(f"Channel {channel} not present in graph channel set.")
+                mask[row, channel_index[int(channel)]] = True
+        return mask
+
+    def edge_weight_tensors(self, *, penalty_value: float) -> tuple[np.ndarray, np.ndarray, List[List[str]]]:
+        """
+        Compute edge list, edge weights tensor, and constraint tags.
+        """
+        station_items = self.ordered_station_items()
+        station_index = {station_id: idx for idx, (station_id, _) in enumerate(station_items)}
+        channel_values = self.channel_values()
+        channel_index = {int(channel): idx for idx, channel in enumerate(channel_values.tolist())}
+        num_channels = channel_values.shape[0]
+        edge_penalties: Dict[Tuple[int, int], np.ndarray] = {}
+        edge_tags: Dict[Tuple[int, int], set[str]] = {}
+
+        for station_id, station in station_items:
+            idx_a = station_index[int(station_id)]
+            for interference in station.interferences:
+                subject_channel = int(interference.subject_channel)
+                other_channel = int(interference.other_channel)
+                if subject_channel not in channel_index or other_channel not in channel_index:
+                    raise KeyError(
+                        f"Constraint channels ({subject_channel}, {other_channel}) missing from graph channel set."
+                    )
+                chan_idx_a = channel_index[subject_channel]
+                chan_idx_b = channel_index[other_channel]
+                for partner in interference.stations:
+                    idx_b = station_index.get(int(partner.station_id))
+                    if idx_b is None or idx_a == idx_b:
+                        continue
+                    edge = (idx_a, idx_b) if idx_a < idx_b else (idx_b, idx_a)
+                    chan_i, chan_j = (chan_idx_a, chan_idx_b) if edge[0] == idx_a else (chan_idx_b, chan_idx_a)
+                    penalties = edge_penalties.get(edge)
+                    if penalties is None:
+                        penalties = np.zeros((num_channels, num_channels), dtype=np.float32)
+                        edge_penalties[edge] = penalties
+                    penalties[chan_i, chan_j] = max(penalties[chan_i, chan_j], float(penalty_value))
+                    penalties[chan_j, chan_i] = max(penalties[chan_j, chan_i], float(penalty_value))
+                    tags = edge_tags.setdefault(edge, set())
+                    tags.add(interference.constraint_type)
+
+        if not edge_penalties:
+            edges = np.zeros((0, 2), dtype=np.int32)
+            edge_weight_tensors = np.zeros((0, num_channels, num_channels), dtype=np.float32)
+            tags_list: List[List[str]] = []
+        else:
+            edges_sorted = sorted(edge_penalties.keys())
+            edges = np.asarray(edges_sorted, dtype=np.int32)
+            edge_weight_tensors = np.stack([edge_penalties[edge] for edge in edges_sorted], axis=0)
+            tags_list = [sorted(edge_tags.get(edge, set())) for edge in edges_sorted]
+        return edges, edge_weight_tensors, tags_list
 
     def make_subgraph(
         self,

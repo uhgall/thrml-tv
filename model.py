@@ -17,20 +17,40 @@ from thrml.models.discrete_ebm import CategoricalEBMFactor, CategoricalGibbsCond
 from thrml.pgm import CategoricalNode
 
 from potts_factor import PottsGraphFactor
+from tools.tv_graph import TVGraph
 
 
 def build_potts_coloring_model(
-    station_ids: np.ndarray,
-    channel_values: np.ndarray,
-    edges_np: np.ndarray,
-    edge_weights_np: np.ndarray,
+    tv_graph: TVGraph,
+    *,
     edge_penalty: float,
-    domain_mask_np: np.ndarray | None = None,
     domain_penalty: float = 10.0,
-) -> tuple[FactorSamplingProgram, list[CategoricalNode]]:
+    penalty_value: float = 1.0,
+) -> tuple[FactorSamplingProgram, list[CategoricalNode], dict[str, object]]:
     """
     Assemble THRML nodes, factors, and a block Gibbs sampler for the Potts model.
+
+    Returns
+    -------
+    tuple
+        (
+            FactorSamplingProgram,
+            list[CategoricalNode],
+            {
+                "station_ids": np.ndarray,
+                "channel_values": np.ndarray,
+                "domain_mask": np.ndarray,
+                "edges": np.ndarray,
+                "edge_weights": np.ndarray,
+                "edge_tags": list[list[str]],
+            },
+        )
     """
+    station_ids = tv_graph.ordered_station_ids()
+    channel_values = tv_graph.channel_values()
+    domain_mask_np = tv_graph.domain_mask()
+    edges_np, edge_weights_np, edge_tags = tv_graph.edge_weight_tensors(penalty_value=penalty_value)
+
     num_stations = int(station_ids.shape[0])
     num_channels = int(channel_values.shape[0])
 
@@ -66,7 +86,16 @@ def build_potts_coloring_model(
 
     sampling_program = FactorSamplingProgram(gibbs_spec, samplers, factors, [])
 
-    return sampling_program, nodes
+    artifacts = {
+        "station_ids": station_ids,
+        "channel_values": channel_values,
+        "edges": edges_np,
+        "edge_weights": edge_weights_np,
+        "domain_mask": domain_mask_np,
+        "edge_tags": edge_tags,
+    }
+
+    return sampling_program, nodes, artifacts
 
 
 def colors_to_block_state(colors: jnp.ndarray, free_blocks: Sequence[Block]) -> list[jnp.ndarray]:
