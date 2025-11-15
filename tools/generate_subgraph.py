@@ -12,77 +12,13 @@ from __future__ import annotations
 
 import argparse
 import csv
-from collections import defaultdict
 import re
 from pathlib import Path
-from typing import Iterable
 
 try:  # pragma: no cover - package vs script execution
-    from .tv_graph import Interference, Station, TVGraph
+    from .tv_graph import TVGraph
 except ImportError:  # pragma: no cover
-    from tv_graph import Interference, Station, TVGraph
-
-
-def _resolve_input_directory(path: str | Path) -> Path:
-    """
-    Ensure the provided path refers to a subdirectory within the repository's ./input directory.
-    """
-    base = Path("input").resolve()
-    candidate = Path(path)
-    if candidate.is_absolute():
-        resolved = candidate.resolve()
-    else:
-        parts = candidate.parts
-        if parts and parts[0] == "input":
-            resolved = (Path.cwd() / candidate).resolve()
-        else:
-            resolved = (base / candidate).resolve()
-    try:
-        resolved.relative_to(base)
-    except ValueError as exc:
-        raise ValueError(f"Input directory must be inside {base}, received {resolved}") from exc
-    if not resolved.exists():
-        raise FileNotFoundError(f"Input directory not found: {resolved}")
-    return resolved
-
-
-def load_tv_graph(input_dir: str | Path) -> tuple[TVGraph, list[str]]:
-    """
-    Parse FCC CSV inputs residing under the repository ``input/`` directory into a ``TVGraph``.
-    """
-    root = _resolve_input_directory(input_dir)
-
-    domain_path = root / "Domain.csv"
-    interference_path = root / "Interference_Paired.csv"
-    parameters_path = root / "parameters.csv"
-
-    station_domains, all_channels = _load_domain(domain_path)
-    params_header, params_by_station = _load_parameters(parameters_path)
-
-    stations: dict[int, Station] = {}
-    for station_id, domain_values in station_domains.items():
-        params = params_by_station.get(station_id, {})
-        lat = _parse_float(params.get("Lat"))
-        lon = _parse_float(params.get("Lon"))
-        stations[station_id] = Station(
-            station_id=station_id,
-            domain=domain_values,
-            lat=lat,
-            lon=lon,
-            attrs=dict(params),
-        )
-
-    channel_for_channel_id = sorted(all_channels)
-    channel_id_for_channel = {channel: idx for idx, channel in enumerate(channel_for_channel_id)}
-
-    _populate_interferences(interference_path, stations)
-
-    graph = TVGraph(
-        stations=stations,
-        channel_id_for_channel=channel_id_for_channel,
-        channel_for_channel_id=channel_for_channel_id,
-    )
-    return graph, params_header
+    from tv_graph import TVGraph
 
 
 def save_interference_counts(graph: TVGraph, output_path: str | Path) -> None:
@@ -90,8 +26,8 @@ def save_interference_counts(graph: TVGraph, output_path: str | Path) -> None:
     Persist a CSV containing per-station interference counts sorted by constraint volume.
     """
     rows: list[tuple[int, int]] = []
-    for station in graph.stations.values():
-        constraint_count = sum(len(interference.stations) for interference in station.interferences)
+    for station in graph.stations_by_id.values():
+        constraint_count = sum(len(interference.station_indices) for interference in station.interferences)
         rows.append((station.station_id, constraint_count))
 
     rows.sort(key=lambda item: (-item[1], item[0]))
@@ -114,7 +50,7 @@ def save_domain_csv(graph: TVGraph, output_path: str | Path) -> None:
 
     with destination.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        for station in sorted(graph.stations.values(), key=lambda item: item.station_id):
+        for station in sorted(graph.stations_by_id.values(), key=lambda item: item.station_id):
             if not station.domain:
                 raise ValueError(
                     f"Station {station.station_id} has no remaining allowed channels after trimming."
@@ -133,7 +69,7 @@ def save_interference_csv(graph: TVGraph, output_path: str | Path) -> None:
 
     with destination.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        for station in sorted(graph.stations.values(), key=lambda item: item.station_id):
+        for station in sorted(graph.stations_by_id.values(), key=lambda item: item.station_id):
             for interference in station.interferences:
                 constraint_type = interference.constraint_type
                 row = [
@@ -142,7 +78,9 @@ def save_interference_csv(graph: TVGraph, output_path: str | Path) -> None:
                     str(interference.other_channel),
                     str(station.station_id),
                 ]
-                partner_ids = [str(partner.station_id) for partner in interference.stations]
+                partner_ids = [
+                    str(graph.station_id_for_index(index)) for index in interference.station_indices
+                ]
                 if not partner_ids:
                     continue
                 row.extend(partner_ids)
@@ -163,7 +101,7 @@ def save_parameters_csv(
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    stations_sorted = sorted(graph.stations.values(), key=lambda item: item.station_id)
+    stations_sorted = sorted(graph.stations_by_id.values(), key=lambda item: item.station_id)
 
     with destination.open("w", newline="") as handle:
         writer = csv.writer(handle)
@@ -251,177 +189,6 @@ def _resolve_output_dir(
     return candidate
 
 
-def _load_domain(path: Path) -> tuple[dict[int, list[int]], set[int]]:
-    """
-    Load Domain.csv into per-station domain lists and global channel set.
-    """
-    if not path.exists():
-        raise FileNotFoundError(f"Domain CSV not found: {path}")
-
-    station_domains: dict[int, list[int]] = {}
-    channels_seen: set[int] = set()
-
-    with path.open("r", newline="") as handle:
-        reader = csv.reader(handle)
-        for row in reader:
-            if not row:
-                continue
-            if row[0].strip().upper() != "DOMAIN":
-                continue
-            if len(row) < 3:
-                raise ValueError(f"Invalid DOMAIN row: {row}")
-
-            try:
-                station_id = int(row[1])
-            except ValueError as exc:
-                raise ValueError(f"Invalid station identifier in DOMAIN row: {row}") from exc
-
-            channels_raw = [value for value in row[2:] if value]
-            channel_values = [_parse_int(value) for value in channels_raw]
-            station_domains[station_id] = _unique_preserving_order(channel_values)
-            channels_seen.update(channel_values)
-
-    if not station_domains:
-        raise ValueError(f"No DOMAIN rows parsed from {path}")
-
-    return station_domains, channels_seen
-
-
-def _load_parameters(path: Path) -> tuple[list[str], dict[int, dict[str, str]]]:
-    """
-    Load parameters.csv and return a mapping from station ID to attribute dict.
-    """
-    if not path.exists():
-        raise FileNotFoundError(f"parameters.csv not found: {path}")
-
-    header: list[str] | None = None
-    params_by_station: dict[int, dict[str, str]] = {}
-
-    with path.open("r", newline="") as handle:
-        reader = csv.reader(handle)
-        for row in reader:
-            if not row:
-                continue
-            if header is None:
-                if row[0].strip() == "FacID":
-                    header = [value.strip() for value in row]
-                continue
-            # Pad short rows with empty strings to align with header length.
-            if len(row) < len(header):
-                row = row + [""] * (len(header) - len(row))
-            values = {header[i]: row[i].strip() for i in range(len(header))}
-            fac_id_raw = values.get("FacID")
-            if not fac_id_raw:
-                continue
-            try:
-                station_id = int(fac_id_raw)
-            except ValueError:
-                continue
-            params_by_station[station_id] = values
-
-    if header is None:
-        raise ValueError(f"Unable to locate header row in {path}")
-
-    return header, params_by_station
-
-
-def _populate_interferences(path: Path, stations: dict[int, Station]) -> None:
-    """
-    Populate `Station.interferences` based on Interference_Paired.csv content.
-    """
-    if not path.exists():
-        raise FileNotFoundError(f"Interference CSV not found: {path}")
-
-    grouped_constraints: dict[tuple[int, str, int, int], set[int]] = defaultdict(set)
-
-    with path.open("r", newline="") as handle:
-        reader = csv.reader(handle)
-        for row in reader:
-            if not row or row[0].startswith("#"):
-                continue
-            if len(row) < 5:
-                continue
-            constraint_type = row[0].strip().upper()
-            if not constraint_type:
-                continue
-            try:
-                subject_channel = _parse_int(row[1])
-                other_channel = _parse_int(row[2])
-                subject_station = _parse_int(row[3])
-            except ValueError:
-                continue
-            if subject_station not in stations:
-                continue
-
-            partners: list[int] = []
-            for raw_partner in row[4:]:
-                if not raw_partner:
-                    continue
-                try:
-                    partner_id = _parse_int(raw_partner)
-                except ValueError:
-                    continue
-                if partner_id == subject_station:
-                    continue
-                if partner_id in stations:
-                    partners.append(partner_id)
-
-            if not partners:
-                continue
-
-            key = (subject_station, constraint_type, subject_channel, other_channel)
-            grouped_constraints[key].update(partners)
-
-    for (station_id, constraint_type, subject_channel, other_channel), partner_ids in grouped_constraints.items():
-        station = stations.get(station_id)
-        if station is None:
-            continue
-        partner_objects = [stations[partner_id] for partner_id in sorted(partner_ids)]
-        station.interferences.append(
-            Interference(
-                constraint_type=constraint_type,
-                subject_channel=subject_channel,
-                other_channel=other_channel,
-                stations=partner_objects,
-            )
-        )
-
-    for station in stations.values():
-        station.interferences.sort(key=lambda item: (item.subject_channel, item.other_channel))
-
-
-def _unique_preserving_order(values: Iterable[int]) -> list[int]:
-    """
-    Return a list of unique integers preserving their first-seen order.
-    """
-    seen: set[int] = set()
-    ordered: list[int] = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            ordered.append(value)
-    return ordered
-
-
-def _parse_int(value: str) -> int:
-    """
-    Convert a string to an integer, raising ValueError on failure.
-    """
-    return int(value.strip())
-
-
-def _parse_float(value: str | None) -> float | None:
-    """
-    Convert a string to a float, returning None for falsy inputs or parse failures.
-    """
-    if not value:
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
-
-
 def _build_cli_parser() -> argparse.ArgumentParser:
     """
     Construct an argument parser for the CLI entry point.
@@ -463,22 +230,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_cli_parser()
     args = parser.parse_args(argv)
 
-    input_dir = _resolve_input_directory(args.input)
-
-    graph, params_header = load_tv_graph(input_dir)
+    graph = TVGraph(args.input)
     subgraph = graph.make_subgraph(args.seed_station, args.channel_count, args.station_count)
 
+    dataset_root = graph.dataset_root if graph.dataset_root is not None else Path(args.input).resolve()
+
     output_dir = _resolve_output_dir(
-        input_dir,
+        dataset_root,
         args.seed_station,
         args.station_count,
         args.channel_count,
     )
 
-    paths = save_subgraph_files(subgraph, params_header, output_dir)
+    paths = save_subgraph_files(subgraph, subgraph.parameters_header, output_dir)
 
     print(
-        f"Generated subgraph with {len(subgraph.stations)} stations and "
+        f"Generated subgraph with {len(subgraph.stations_by_id)} stations and "
         f"{len(subgraph.channel_for_channel_id)} channels.",
     )
     print(f"Domain written to: {paths['domain']}")
