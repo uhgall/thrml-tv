@@ -103,7 +103,8 @@ class MatplotlibSamplerViz:
 
         self.energy_ax.set_title("Energy trajectory")
         self.energy_ax.set_xlabel("Step")
-        self.energy_ax.set_ylabel("Energy")
+        self.energy_ax.set_ylabel("Energy (log scale)")
+        self.energy_ax.set_yscale("log")
         self.energy_ax.grid(True, alpha=0.3)
         (self.energy_line,) = self.energy_ax.plot([], [], color="tab:blue", linewidth=1.5)
         (self.energy_marker,) = self.energy_ax.plot([], [], marker="o", color="tab:red", markersize=6)
@@ -224,13 +225,55 @@ class MatplotlibSamplerViz:
         station_edge_colours[domain_mask] = self._domain_violation_edge
         self.scatter.set_edgecolor(station_edge_colours)
 
-        if self.edge_collection is not None and len(edge_mask):
-            edge_colours = np.tile(self._edge_ok, (len(edge_mask), 1))
-            edge_colours[edge_mask] = self._edge_violation
-            self.edge_collection.set_color(edge_colours)
+        incident_edge_violation = np.zeros(len(domain_mask), dtype=bool)
+
+        if self.show_edges and len(self.edges):
+            segments = self.positions[self.edges][:, :, [1, 0]]
+            violated_segments = segments[edge_mask]
+            ok_segments = segments[~edge_mask]
+
+            if ok_segments.size:
+                ok_collection = LineCollection(
+                    ok_segments,
+                    colors=np.tile(self._edge_ok, (len(ok_segments), 1)),
+                    linewidths=0.6,
+                    zorder=1,
+                )
+            else:
+                ok_collection = None
+
+            if violated_segments.size:
+                violation_collection = LineCollection(
+                    violated_segments,
+                    colors=np.tile(self._edge_violation, (len(violated_segments), 1)),
+                    linewidths=1.3,
+                    zorder=2,
+                )
+            else:
+                violation_collection = None
+
+            # remove previous edge collections (anything that's a LineCollection and not the scatter itself)
+            for collection in [
+                coll for coll in self.ax.collections if isinstance(coll, LineCollection)
+            ]:
+                collection.remove()
+
+            if ok_collection is not None:
+                self.ax.add_collection(ok_collection)
+            if violation_collection is not None:
+                self.ax.add_collection(violation_collection)
+
+            if violated_segments.size:
+                violated_nodes = self.edges[edge_mask].reshape(-1)
+                incident_edge_violation[violated_nodes] = True
 
         for idx, label in enumerate(self.labels):
-            colour = self._domain_violation_edge if domain_mask[idx] else (0.1, 0.1, 0.1, 0.9)
+            if domain_mask[idx]:
+                colour = self._domain_violation_edge
+            elif incident_edge_violation[idx]:
+                colour = self._edge_violation
+            else:
+                colour = (0.1, 0.1, 0.1, 0.0)
             label.set_color(colour)
 
         if self.history_steps:
@@ -264,11 +307,9 @@ class MatplotlibSamplerViz:
         y_min = float(energies.min())
         y_max = float(energies.max())
         span = y_max - y_min
-        if span <= 1e-6:
-            y_pad = max(abs(y_max) * 0.05, 1.0)
-        else:
-            y_pad = span * 0.1
-        self.energy_ax.set_ylim(y_min - y_pad, y_max + y_pad)
+        y_min = max(energies.min(), 1e-6)
+        y_max = max(energies.max(), 1e-6)
+        self.energy_ax.set_ylim(y_min * 0.9, y_max * 1.1)
 
     def _set_current_index(self, index: int, *, force: bool = False) -> None:
         if not self.history_steps:

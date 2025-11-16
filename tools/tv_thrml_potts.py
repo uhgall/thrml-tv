@@ -408,7 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-conflict", type=float, default=8.0, help="Energy penalty for triggering a constraint.")
     parser.add_argument("--lambda-domain", type=float, default=100.0, help="Penalty for leaving a station domain.")
     parser.add_argument("--warmup", type=int, default=0, help="Number of warmup sweeps before sampling.")
-    parser.add_argument("--samples", type=int, default=100, help="Number of samples to keep after warmup.")
+    parser.add_argument("--samples", type=int, default=10000, help="Number of samples to keep after warmup.")
     parser.add_argument(
         "--steps-per-sample",
         type=int,
