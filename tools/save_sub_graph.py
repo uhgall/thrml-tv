@@ -43,14 +43,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of unique channels to retain.",
     )
     parser.add_argument(
+        "--drop-top-channels",
+        type=int,
+        default=0,
+        help="With --new-channel-only, drop the highest indexed domain channels (default: 0).",
+    )
+    parser.add_argument(
         "--new-channel-only",
         action="store_true",
         help="Export every station with a post-auction channel assignment instead of running BFS.",
     )
     parser.add_argument(
         "--remove-top-channel",
-        action="store_true",
-        help="With --new-channel-only, drop the highest indexed domain channel from the export.",
+        dest="drop_top_channels",
+        action="store_const",
+        const=1,
+        help=argparse.SUPPRESS,
     )
     return parser
 
@@ -65,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         station_limit=args.stations,
         channel_limit=args.channels,
         new_channel_only=args.new_channel_only,
-        remove_top_channel=args.remove_top_channel,
+        drop_top_channels=args.drop_top_channels,
     )
     print(f"Subgraph saved to: {output_dir}")
     return 0

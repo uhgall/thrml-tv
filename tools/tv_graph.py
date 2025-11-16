@@ -174,7 +174,7 @@ class TVGraph:
         station_limit: int = 5,
         channel_limit: int = 7,
         new_channel_only: bool = False,
-        remove_top_channel: bool = False,
+        drop_top_channels: int = 0,
     ) -> Path:
         """
         Persist a BFS-limited subset of the current graph to ``input/``.
@@ -192,10 +192,10 @@ class TVGraph:
             every station that has a post-auction channel assignment. Domains are
             intersected with the set of observed post-auction channels and the
             resulting files are filtered accordingly.
-        remove_top_channel:
-            When ``True`` and ``new_channel_only`` is set, exclude the domain channel with
-            the highest contiguous index from the exported graph while leaving post-auction
-            assignments untouched.
+        drop_top_channels:
+            When greater than zero and ``new_channel_only`` is set, exclude the domain channels
+            with the highest contiguous indices from the exported graph while leaving post-auction
+            assignments untouched. Channels are removed in descending order of contiguous index.
 
         Returns
         -------
@@ -204,10 +204,11 @@ class TVGraph:
             ``parameters.csv``, ``post_auction_parameters.csv``, and
             ``Interference_Paired.csv`` for the subset.
         """
-        if remove_top_channel and not new_channel_only:
-            raise ValueError("remove_top_channel requires new_channel_only=True.")
+        if drop_top_channels < 0:
+            raise ValueError("drop_top_channels must be non-negative.")
+        if drop_top_channels and not new_channel_only:
+            raise ValueError("drop_top_channels requires new_channel_only=True.")
 
-        removed_channel_value: int | None = None
         domain_channel_set: set[int]
 
         if new_channel_only:
@@ -228,20 +229,27 @@ class TVGraph:
             station_ids = list(station_ids)
             domain_channel_set = set(selected_channel_set)
 
-            if remove_top_channel:
-                max_channel_index: int | None = None
+            if drop_top_channels:
+                eligible_channels: set[int] = set()
                 for station_id in station_ids:
                     station = self.station(station_id)
                     for channel in station.domain:
-                        if channel not in domain_channel_set:
-                            continue
-                        channel_index = self.channel_index_for_channel(channel)
-                        if max_channel_index is None or channel_index > max_channel_index:
-                            max_channel_index = channel_index
-                            removed_channel_value = channel
-                if removed_channel_value is None:
-                    raise ValueError("Unable to locate a domain channel eligible for removal.")
-                domain_channel_set.discard(removed_channel_value)
+                        if channel in domain_channel_set:
+                            eligible_channels.add(channel)
+
+                if len(eligible_channels) < drop_top_channels:
+                    raise ValueError(
+                        f"Only {len(eligible_channels)} domain channel(s) eligible for removal; "
+                        f"cannot satisfy drop_top_channels={drop_top_channels}."
+                    )
+
+                sorted_channels = sorted(
+                    eligible_channels,
+                    key=self.channel_index_for_channel,
+                    reverse=True,
+                )
+                for channel in sorted_channels[:drop_top_channels]:
+                    domain_channel_set.discard(channel)
 
             output_dir = (
                 self.dataset_root.parent
@@ -347,7 +355,7 @@ class TVGraph:
 
         station_set = set(station_ids)
 
-        if new_channel_only and not domain_channel_set and not remove_top_channel:
+        if new_channel_only and not domain_channel_set and drop_top_channels == 0:
             raise ValueError("Post-auction subgraph requires at least one valid channel.")
 
         output_dir.mkdir(parents=True, exist_ok=False)
@@ -358,7 +366,7 @@ class TVGraph:
             for station_id in station_ids:
                 station = self.station(station_id)
                 domain_subset = [channel for channel in station.domain if channel in domain_channel_set]
-                if not domain_subset and not remove_top_channel:
+                if not domain_subset and drop_top_channels == 0:
                     raise ValueError(
                         f"Station {station_id} does not retain any channels within the selected subset."
                     )

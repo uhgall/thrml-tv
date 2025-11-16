@@ -113,27 +113,37 @@ def _make_interference_factor(
     return CategoricalEBMFactor([Block(head_nodes), Block(tail_nodes)], jnp.asarray(weights))
 
 
-def _prepare_initial_state(graph: TVGraph, free_blocks: Sequence[Block], seed: int) -> list[jnp.ndarray]:
+def _prepare_initial_state(
+    graph: TVGraph, free_blocks: Sequence[Block], seed: int
+) -> tuple[list[jnp.ndarray], int, int]:
     """
     Build the sampler's initial block state, preferring post-auction channel assignments.
     """
 
     key = jax.random.PRNGKey(seed)
     init_state: list[jnp.ndarray] = []
+    post_count = 0
+    random_count = 0
     for station_index, block in enumerate(free_blocks):
         station_id = graph.station_id_for_index(station_index)
         station = graph.station(station_id)
         new_channel = station.new_channel
         if new_channel is not None:
-            channel_idx = graph.channel_index_for_channel(new_channel)
+            if new_channel not in graph.channel_values:
+                channel_idx = graph.channel_count - 1
+                print(f"→ Station {station.station_id} has a new channel that is not in the graph channel set. Using the highest channel index, {channel_idx}.")
+            else:   
+                channel_idx = graph.channel_index_for_channel(new_channel)
+            post_count += 1
         else:
             domain = np.asarray(station.domain_indices, dtype=np.int32)
             if domain.size == 0:
                 raise ValueError(f"Station {station.station_id} has an empty domain.")
             key, subkey = jax.random.split(key)
             channel_idx = int(jax.random.choice(subkey, domain))
+            random_count += 1
         init_state.append(jnp.asarray([channel_idx], dtype=jnp.uint8))
-    return init_state
+    return init_state, post_count, random_count
 
 
 def _build_thrml_components(
@@ -170,10 +180,17 @@ def _build_thrml_components(
     program = FactorSamplingProgram(gibbs_spec, samplers, factors, other_interaction_groups=[])
     print("→ Compiled FactorSamplingProgram with categorical Gibbs conditionals.")
 
-    init_state = _prepare_initial_state(graph, free_blocks, seed)
+    init_state, init_post_count, init_random_count = _prepare_initial_state(graph, free_blocks, seed)
     print("→ Initial state seeded from post-auction channels where available.")
 
-    return PottsComponents(program=program, factors=factors, free_blocks=free_blocks, init_state=init_state)
+    print(f"→ Initial state: {init_post_count} post-auction, {init_random_count} random draws.")
+
+    return PottsComponents(
+        program=program,
+        factors=factors,
+        free_blocks=free_blocks,
+        init_state=init_state
+    )
 
 
 def _block_assignment_to_array(block_state: Sequence[ArrayLike]) -> np.ndarray:
