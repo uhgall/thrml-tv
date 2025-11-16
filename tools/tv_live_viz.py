@@ -5,8 +5,14 @@ Matplotlib-based live visualisation for THRML TV sampling runs.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Dict, Tuple, List
+
+# Use non-interactive backend if no display available
+if not os.environ.get('DISPLAY'):
+    import matplotlib
+    matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
 import numpy as np

@@ -19,10 +19,14 @@ The script logs each THRML construction step so the mapping from FCC data to the
 from __future__ import annotations
 
 import argparse
+import os
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence, TYPE_CHECKING
+
+# Force CPU to avoid GPU memory issues with large graphs
+os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 
 import jax
 import jax.numpy as jnp
