@@ -269,58 +269,65 @@ class TVGraph:
                 )
 
             station_ids = visited
-            selected_channel_set: set[int] = set()
 
+            channel_sequence: list[int] = []
+            channel_set: set[int] = set()
+
+            # Always retain post-auction assignments when present.
             for station_id in station_ids:
                 station = self.station(station_id)
                 if not station.domain:
                     raise ValueError(f"Station {station_id} has an empty domain.")
 
-                if any(channel in selected_channel_set for channel in station.domain):
+                new_channel = station.new_channel
+                if new_channel is None:
                     continue
+                if new_channel not in station.domain:
+                    raise ValueError(
+                        f"Station {station_id} post-auction channel {new_channel} not present in its domain."
+                    )
+                if new_channel in channel_set:
+                    continue
+                channel_set.add(new_channel)
+                channel_sequence.append(new_channel)
 
-                for channel in station.domain:
-                    if channel not in selected_channel_set:
-                        selected_channel_set.add(channel)
-                        break
-                else:
-                    raise ValueError(f"Unable to allocate a channel for station {station_id}.")
-
-            if len(selected_channel_set) > channel_limit:
+            if len(channel_set) > channel_limit:
                 raise ValueError(
-                    f"Channel limit {channel_limit} is insufficient; "
-                    f"requires at least {len(selected_channel_set)} unique channels."
+                    f"Post-auction assignments require {len(channel_set)} unique channels, "
+                    f"exceeding channel_limit={channel_limit}."
                 )
 
-            if len(selected_channel_set) < channel_limit:
-                all_candidate_channels = sorted(
+            for station_id in station_ids:
+                if len(channel_set) >= channel_limit:
+                    break
+                station = self.station(station_id)
+                for channel in station.domain:
+                    if channel in channel_set:
+                        continue
+                    channel_set.add(channel)
+                    channel_sequence.append(channel)
+                    if len(channel_set) >= channel_limit:
+                        break
+
+            if len(channel_set) < channel_limit:
+                total_unique = len(
                     {
                         channel
                         for station_id in station_ids
                         for channel in self.station(station_id).domain
                     }
                 )
-                for channel in all_candidate_channels:
-                    if channel in selected_channel_set:
-                        continue
-                    selected_channel_set.add(channel)
-                    if len(selected_channel_set) >= channel_limit:
-                        break
-
-            if len(selected_channel_set) < channel_limit:
                 raise ValueError(
-                    f"Only {len(selected_channel_set)} unique channels available across the selected stations; "
+                    f"Only {total_unique} unique channels available across the selected stations; "
                     f"cannot satisfy channel_limit={channel_limit}."
                 )
 
-            if not selected_channel_set:
-                raise ValueError("Unable to identify any channels for the sub-graph.")
+            domain_channel_set = set(channel_sequence[:channel_limit])
 
             output_dir = (
                 self.dataset_root.parent
                 / f"{self.dataset_root.name}-seed{seed_station}-st{station_limit}-ch{channel_limit}"
             )
-            domain_channel_set = set(selected_channel_set)
 
         station_set = set(station_ids)
 
