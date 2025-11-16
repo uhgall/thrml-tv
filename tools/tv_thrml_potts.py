@@ -22,7 +22,7 @@ import argparse
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -36,9 +36,16 @@ except ImportError:  # pragma: no cover
 
 from thrml import Block, BlockGibbsSpec, FactorSamplingProgram, SamplingSchedule, sample_states
 from thrml.block_management import block_state_to_global
+from thrml.block_sampling import sample_blocks
 from thrml.models import CategoricalEBMFactor, CategoricalGibbsConditional
 from thrml.models.ebm import DEFAULT_NODE_SHAPE_DTYPES
 from thrml.pgm import CategoricalNode
+
+if TYPE_CHECKING:  # pragma: no cover
+    try:
+        from .tv_live_viz import MatplotlibSamplerViz
+    except ImportError:  # pragma: no cover
+        from tv_live_viz import MatplotlibSamplerViz
 
 
 @dataclass(slots=True)
@@ -283,6 +290,80 @@ def _collect_samples(components: PottsComponents, schedule: SamplingSchedule, se
     return np.stack(stacked, axis=1)
 
 
+def _collect_samples_with_viz(
+    components: PottsComponents,
+    schedule: SamplingSchedule,
+    seed: int,
+    viz: "MatplotlibSamplerViz",
+    *,
+    viz_every: int,
+) -> np.ndarray:
+    """
+    Run block Gibbs sampling with a live Matplotlib visualisation.
+    """
+
+    if schedule.n_samples <= 0:
+        return np.zeros((0, len(components.init_state)), dtype=np.int32)
+    if schedule.steps_per_sample <= 0:
+        raise ValueError("steps_per_sample must be positive when using live visualisation.")
+
+    key = jax.random.PRNGKey(seed ^ 0xFEED5EED)
+    state_free = [jnp.asarray(block) for block in components.init_state]
+    clamp_state: list[jnp.ndarray] = []
+    sampler_states = [sampler.init() for sampler in components.program.samplers]
+
+    samples: list[np.ndarray] = []
+    step = 0
+    last_assignment: np.ndarray | None = None
+
+    def maybe_update(current_step: int, force: bool = False) -> np.ndarray:
+        nonlocal last_assignment
+        should_refresh = force or (viz_every > 0 and current_step % viz_every == 0)
+        if not should_refresh and last_assignment is not None:
+            return last_assignment
+
+        assignment = _block_assignment_to_array(state_free)
+        domain_mask, edge_mask = viz.compute_violation_masks(assignment)
+        if force or (viz_every > 0 and current_step % viz_every == 0):
+            viz.update(current_step, assignment, domain_mask, edge_mask)
+        last_assignment = assignment
+        return assignment
+
+    maybe_update(step, force=True)
+
+    for _ in range(schedule.n_warmup):
+        step += 1
+        key, subkey = jax.random.split(key)
+        state_free, sampler_states = sample_blocks(
+            subkey,
+            state_free,
+            clamp_state,
+            components.program,
+            sampler_states,
+        )
+        maybe_update(step)
+
+    assignment = maybe_update(step, force=True)
+    samples.append(assignment.copy())
+
+    for _ in range(1, schedule.n_samples):
+        for _ in range(schedule.steps_per_sample):
+            step += 1
+            key, subkey = jax.random.split(key)
+            state_free, sampler_states = sample_blocks(
+                subkey,
+                state_free,
+                clamp_state,
+                components.program,
+                sampler_states,
+            )
+            maybe_update(step)
+        assignment = maybe_update(step, force=True)
+        samples.append(assignment.copy())
+
+    return np.stack(samples, axis=0)
+
+
 def _summarise_samples(
     graph: TVGraph,
     components: PottsComponents,
@@ -334,6 +415,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Gibbs sweeps between stored samples (thinning).",
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed for initial state and sampling.")
+    parser.add_argument("--live-viz", action="store_true", help="Enable live Matplotlib visualisation during sampling.")
+    parser.add_argument(
+        "--viz-every",
+        type=int,
+        default=10,
+        help="Number of Gibbs sweeps between visual updates when --live-viz is enabled.",
+    )
+    parser.add_argument(
+        "--viz-hide-edges",
+        action="store_true",
+        help="Disable drawing interference edges in the live visualisation.",
+    )
+    parser.add_argument(
+        "--viz-marker-size",
+        type=float,
+        default=36.0,
+        help="Marker size passed to Matplotlib when --live-viz is enabled.",
+    )
     return parser
 
 
@@ -366,7 +465,29 @@ def main(argv: list[str] | None = None) -> int:
     if schedule.n_samples == 0:
         return 0
 
-    samples = _collect_samples(components, schedule, seed=args.seed)
+    viz: MatplotlibSamplerViz | None = None
+
+    if args.live_viz:
+        try:
+            from .tv_live_viz import MatplotlibSamplerViz
+        except ImportError:  # pragma: no cover
+            from tv_live_viz import MatplotlibSamplerViz
+
+        viz = MatplotlibSamplerViz(
+            graph,
+            marker_size=args.viz_marker_size,
+            show_edges=not args.viz_hide_edges,
+        )
+        viz_every = max(1, args.viz_every)
+        samples = _collect_samples_with_viz(
+            components,
+            schedule,
+            seed=args.seed,
+            viz=viz,
+            viz_every=viz_every,
+        )
+    else:
+        samples = _collect_samples(components, schedule, seed=args.seed)
     best_index, best_stats, best_energy = _summarise_samples(graph, components, samples)
     best_assignment = samples[best_index]
 
@@ -389,6 +510,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {station_id:<8} → {channel}")
     if graph.station_count > preview:
         print("  … (truncated)")
+
+    if viz is not None:
+        viz.block()
 
     return 0
 
