@@ -22,6 +22,9 @@ except ImportError:  # pragma: no cover
 class MatplotlibSamplerViz:
     """
     Render live sampler state using a Matplotlib scatter plot with optional edges.
+
+    Use ←/→ (or h/l) to step through recorded updates, Home/End to jump to the
+    first or most recent state.
     """
 
     graph: TVGraph
@@ -33,10 +36,19 @@ class MatplotlibSamplerViz:
     edge_lookup: Dict[Tuple[int, int], int] = field(init=False, repr=False)
     figure: plt.Figure = field(init=False, repr=False)
     ax: plt.Axes = field(init=False, repr=False)
+    energy_ax: plt.Axes = field(init=False, repr=False)
     scatter: object = field(init=False, repr=False)
     edge_collection: LineCollection | None = field(init=False, default=None, repr=False)
     title: object = field(init=False, repr=False)
     labels: List[object] = field(init=False, repr=False)
+    energy_line: object = field(init=False, repr=False)
+    energy_marker: object = field(init=False, repr=False)
+    history_steps: List[int] = field(init=False, repr=False)
+    history_assignments: List[np.ndarray] = field(init=False, repr=False)
+    history_domain_masks: List[np.ndarray] = field(init=False, repr=False)
+    history_edge_masks: List[np.ndarray] = field(init=False, repr=False)
+    history_energies: List[float] = field(init=False, repr=False)
+    current_index: int = field(init=False, repr=False)
     _palette: np.ndarray = field(init=False, repr=False)
     _domain_ok_edge: np.ndarray = field(init=False, repr=False)
     _domain_violation_edge: np.ndarray = field(init=False, repr=False)
@@ -48,7 +60,13 @@ class MatplotlibSamplerViz:
         self.edges, self.edge_lookup = self._extract_edges(self.graph)
 
         plt.ion()
-        self.figure, self.ax = plt.subplots(figsize=(9, 7))
+        self.figure, axes = plt.subplots(
+            2,
+            1,
+            figsize=(10, 9),
+            gridspec_kw={"height_ratios": [3.0, 1.2]},
+        )
+        self.ax, self.energy_ax = axes
         self.ax.set_aspect("equal", adjustable="box")
         self.ax.set_xlabel("Longitude")
         self.ax.set_ylabel("Latitude")
@@ -82,6 +100,23 @@ class MatplotlibSamplerViz:
         self.title = self.ax.set_title("Sampler initialised")
         self.labels = self._add_city_labels()
         self._set_axis_bounds()
+
+        self.energy_ax.set_title("Energy trajectory")
+        self.energy_ax.set_xlabel("Step")
+        self.energy_ax.set_ylabel("Energy")
+        self.energy_ax.grid(True, alpha=0.3)
+        (self.energy_line,) = self.energy_ax.plot([], [], color="tab:blue", linewidth=1.5)
+        (self.energy_marker,) = self.energy_ax.plot([], [], marker="o", color="tab:red", markersize=6)
+
+        self.history_steps = []
+        self.history_assignments = []
+        self.history_domain_masks = []
+        self.history_edge_masks = []
+        self.history_energies = []
+        self.current_index = -1
+
+        self.figure.canvas.mpl_connect("key_press_event", self._on_key_press)
+
         self.figure.tight_layout()
         self.figure.canvas.draw_idle()
 
@@ -129,35 +164,133 @@ class MatplotlibSamplerViz:
         assignment: np.ndarray,
         domain_violation_mask: np.ndarray,
         edge_violation_mask: np.ndarray,
+        energy: float,
     ) -> None:
         """
-        Apply visual updates for the latest sampler state.
+        Record a new sampler state and refresh the visualisation.
         """
+
+        self.record_state(step, assignment, domain_violation_mask, edge_violation_mask, energy)
+
+    def record_state(
+        self,
+        step: int,
+        assignment: np.ndarray,
+        domain_violation_mask: np.ndarray,
+        edge_violation_mask: np.ndarray,
+        energy: float,
+    ) -> None:
+        """
+        Store the provided sampler state in the history and redraw the current view.
+        """
+
+        step_value = int(step)
+        assignment_arr = np.asarray(assignment, dtype=np.int32).copy()
+        domain_mask_arr = np.asarray(domain_violation_mask, dtype=bool).copy()
+        edge_mask_arr = np.asarray(edge_violation_mask, dtype=bool).copy()
+        energy_value = float(energy)
+
+        if self.history_steps and self.history_steps[-1] == step_value:
+            self.history_assignments[-1] = assignment_arr
+            self.history_domain_masks[-1] = domain_mask_arr
+            self.history_edge_masks[-1] = edge_mask_arr
+            self.history_energies[-1] = energy_value
+        else:
+            self.history_steps.append(step_value)
+            self.history_assignments.append(assignment_arr)
+            self.history_domain_masks.append(domain_mask_arr)
+            self.history_edge_masks.append(edge_mask_arr)
+            self.history_energies.append(energy_value)
+
+        new_index = len(self.history_steps) - 1
+        self._update_energy_plot()
+        self._set_current_index(new_index, force=True)
+
+    def _apply_state(self) -> None:
+        if self.current_index < 0 or not self.history_steps:
+            return
+
+        assignment = self.history_assignments[self.current_index]
+        domain_mask = self.history_domain_masks[self.current_index]
+        edge_mask = self.history_edge_masks[self.current_index]
+        step_value = self.history_steps[self.current_index]
+        energy_value = self.history_energies[self.current_index]
 
         palette_len = len(self._palette)
         colours = self._palette[assignment % palette_len]
         self.scatter.set_facecolor(colours)
 
-        station_edge_colours = np.tile(self._domain_ok_edge, (len(domain_violation_mask), 1))
-        station_edge_colours[domain_violation_mask] = self._domain_violation_edge
+        station_edge_colours = np.tile(self._domain_ok_edge, (len(domain_mask), 1))
+        station_edge_colours[domain_mask] = self._domain_violation_edge
         self.scatter.set_edgecolor(station_edge_colours)
 
-        if self.edge_collection is not None and len(edge_violation_mask):
-            edge_colours = np.tile(self._edge_ok, (len(edge_violation_mask), 1))
-            edge_colours[edge_violation_mask] = self._edge_violation
+        if self.edge_collection is not None and len(edge_mask):
+            edge_colours = np.tile(self._edge_ok, (len(edge_mask), 1))
+            edge_colours[edge_mask] = self._edge_violation
             self.edge_collection.set_color(edge_colours)
 
         for idx, label in enumerate(self.labels):
-            colour = self._domain_violation_edge if domain_violation_mask[idx] else (0.1, 0.1, 0.1, 0.9)
+            colour = self._domain_violation_edge if domain_mask[idx] else (0.1, 0.1, 0.1, 0.9)
             label.set_color(colour)
 
+        if self.history_steps:
+            current_step = self.history_steps[self.current_index]
+            current_energy = self.history_energies[self.current_index]
+            self.energy_marker.set_data([current_step], [current_energy])
+
         self.title.set_text(
-            f"Step {step:,} · domain violations {int(domain_violation_mask.sum())} · "
-            f"edge violations {int(edge_violation_mask.sum())}"
+            f"Step {step_value:,} · energy {energy_value:.2f} · "
+            f"domain violations {int(domain_mask.sum())} · edge violations {int(edge_mask.sum())}"
         )
         self.figure.canvas.draw_idle()
         self.figure.canvas.flush_events()
         plt.pause(0.001)
+
+    def _update_energy_plot(self) -> None:
+        if not self.history_steps:
+            self.energy_line.set_data([], [])
+            self.energy_marker.set_data([], [])
+            return
+
+        steps = np.asarray(self.history_steps, dtype=float)
+        energies = np.asarray(self.history_energies, dtype=float)
+        self.energy_line.set_data(steps, energies)
+
+        x_min = float(steps.min())
+        x_max = float(steps.max())
+        x_pad = max((x_max - x_min) * 0.05, 1.0) if x_max != x_min else 1.0
+        self.energy_ax.set_xlim(x_min - x_pad, x_max + x_pad)
+
+        y_min = float(energies.min())
+        y_max = float(energies.max())
+        span = y_max - y_min
+        if span <= 1e-6:
+            y_pad = max(abs(y_max) * 0.05, 1.0)
+        else:
+            y_pad = span * 0.1
+        self.energy_ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    def _set_current_index(self, index: int, *, force: bool = False) -> None:
+        if not self.history_steps:
+            return
+        index = max(0, min(index, len(self.history_steps) - 1))
+        if not force and index == self.current_index:
+            return
+        self.current_index = index
+        self._apply_state()
+
+    def _on_key_press(self, event) -> None:
+        if not self.history_steps:
+            return
+
+        if event.key in ("left", "h"):
+            self._set_current_index(self.current_index - 1)
+        elif event.key in ("right", "l"):
+            self._set_current_index(self.current_index + 1)
+        elif event.key in ("home",):
+            self._set_current_index(0)
+        elif event.key in ("end",):
+            self._set_current_index(len(self.history_steps) - 1)
 
     def block(self) -> None:
         """

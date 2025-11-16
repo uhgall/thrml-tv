@@ -325,7 +325,8 @@ def _collect_samples_with_viz(
         assignment = _block_assignment_to_array(state_free)
         domain_mask, edge_mask = viz.compute_violation_masks(assignment)
         if force or (viz_every > 0 and current_step % viz_every == 0):
-            viz.update(current_step, assignment, domain_mask, edge_mask)
+            energy = _evaluate_energy(components, state_free)
+            viz.update(current_step, assignment, domain_mask, edge_mask, energy)
         last_assignment = assignment
         return assignment
 
