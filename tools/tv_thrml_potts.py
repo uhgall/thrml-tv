@@ -53,14 +53,6 @@ class PottsComponents:
     init_state: list[jnp.ndarray]
 
 
-def _build_station_nodes(graph: TVGraph) -> list[CategoricalNode]:
-    """
-    Instantiate one ``CategoricalNode`` per station in contiguous index order.
-    """
-
-    return [CategoricalNode() for _ in graph.station_ids_by_index]
-
-
 def _make_domain_factor(graph: TVGraph, nodes: Sequence[CategoricalNode], penalty: float) -> CategoricalEBMFactor:
     """
     Encode station-specific channel domains via a unary ``CategoricalEBMFactor``.
@@ -79,35 +71,6 @@ def _make_domain_factor(graph: TVGraph, nodes: Sequence[CategoricalNode], penalt
     return CategoricalEBMFactor([Block(nodes)], jnp.asarray(weights))
 
 
-def _iter_canonical_constraints(graph: TVGraph) -> Iterable[tuple[int, int, int, int]]:
-    """
-    Iterate over unique channel incompatibilities, collapsing symmetric FCC rows.
-
-    Returns tuples ``(station_lo, station_hi, channel_lo_idx, channel_hi_idx)`` where channel indices follow the
-    station ordering. This is the data structure fed into the Potts factor.
-    """
-
-    seen: set[tuple[int, int, int, int]] = set()
-    for station in graph.stations_by_id.values():
-        if station.station_index is None:
-            continue
-        a_idx = station.station_index
-        for interference in station.interferences:
-            a_chan_idx = interference.subject_channel_index
-            b_chan_idx = interference.other_channel_index
-            for partner_idx in interference.station_indices:
-                if a_idx == partner_idx:
-                    continue
-                if a_idx < partner_idx:
-                    key = (a_idx, partner_idx, a_chan_idx, b_chan_idx)
-                else:
-                    key = (partner_idx, a_idx, b_chan_idx, a_chan_idx)
-                if key in seen:
-                    continue
-                seen.add(key)
-                yield key
-
-
 def _make_interference_factor(
     graph: TVGraph,
     nodes: Sequence[CategoricalNode],
@@ -115,9 +78,24 @@ def _make_interference_factor(
 ) -> CategoricalEBMFactor | None:
     """
     Create a pairwise Potts factor that penalises channel combinations forbidden by FCC constraints.
+    Collapse symmetric FCC rows and yield unique incompatibilities.
     """
 
-    constraint_rows = list(_iter_canonical_constraints(graph))
+    seen: set[tuple[int, int, int, int]] = set()
+    constraint_rows: list[tuple[int, int, int, int]] = []
+    for station in graph.stations_by_id.values():
+        if station.station_index is None:
+            continue
+        a_idx = station.station_index
+        for interference, partner_idx in station.interferences_deduped():
+            a_chan_idx = interference.subject_channel_index
+            b_chan_idx = interference.other_channel_index
+            key = (a_idx, partner_idx, a_chan_idx, b_chan_idx)
+            if key in seen:
+                raise ValueError(f"Duplicate constraint: {key}")
+            seen.add(key)
+            constraint_rows.append(key)
+
     if not constraint_rows:
         return None
 
@@ -169,7 +147,7 @@ def _build_thrml_components(
     Convert the TVGraph into THRML nodes, factors, and a compiled sampling program.
     """
 
-    nodes = _build_station_nodes(graph)
+    nodes = [CategoricalNode() for _ in graph.station_ids_by_index]
     free_blocks = [Block([node]) for node in nodes]
 
     print("→ Creating THRML categorical nodes (one per station) and single-node Gibbs blocks.")
@@ -329,9 +307,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Folder under ./input/ containing Domain.csv, Interference_Paired.csv, post_auction_parameters.csv.",
     )
     parser.add_argument("--lambda-conflict", type=float, default=8.0, help="Energy penalty for triggering a constraint.")
-    parser.add_argument("--lambda-domain", type=float, default=12.0, help="Penalty for leaving a station domain.")
-    parser.add_argument("--warmup", type=int, default=500, help="Number of warmup sweeps before sampling.")
-    parser.add_argument("--samples", type=int, default=250, help="Number of samples to keep after warmup.")
+    parser.add_argument("--lambda-domain", type=float, default=100.0, help="Penalty for leaving a station domain.")
+    parser.add_argument("--warmup", type=int, default=0, help="Number of warmup sweeps before sampling.")
+    parser.add_argument("--samples", type=int, default=100, help="Number of samples to keep after warmup.")
     parser.add_argument(
         "--steps-per-sample",
         type=int,

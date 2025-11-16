@@ -52,6 +52,22 @@ class Station:
             neighbor_indices.update(interference.station_indices)
         return neighbor_indices
 
+    def interferences_deduped(self) -> Iterable[tuple["Interference", int]]:
+        """
+        Yield (interference, partner_index) pairs where this station's index is lower than the partner.
+
+        FCC data records each constraint twice (once per station). Restricting to ``station_index < partner_index``
+        avoids emitting duplicate constraint edges when constructing symmetric factors.
+        """
+
+        if self.station_index is None:
+            return
+        subject_index = self.station_index
+        for interference in self.interferences:
+            for partner_index in interference.station_indices:
+                if subject_index < partner_index:
+                    yield interference, partner_index
+
 
 @dataclass
 class Interference:

@@ -33,14 +33,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stations",
         type=int,
-        default=5,
-        help="Maximum number of stations to include (default: 5).",
+        default=50,
+        help="Maximum number of stations to include",
     )
     parser.add_argument(
         "--channels",
         type=int,
-        default=7,
-        help="Maximum number of unique channels to retain (default: 7).",
+        default=30,
+        help="Maximum number of unique channels to retain.",
     )
     parser.add_argument(
         "--new-channel-only",
