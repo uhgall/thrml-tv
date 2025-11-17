@@ -128,7 +128,8 @@ def _prepare_initial_state(
     graph: TVGraph, free_blocks: Sequence[Block], seed: int, *, force_random: bool = False
 ) -> tuple[list[jnp.ndarray], int, int]:
     """
-    Build the sampler's initial block state, preferring post-auction channel assignments.
+    Build the sampler's initial block state, preferring post-auction channel assignments unless
+    ``force_random_init`` requests random initialisation within each station domain.
     """
 
     key = jax.random.PRNGKey(seed)
