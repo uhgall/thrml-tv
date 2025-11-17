@@ -45,9 +45,16 @@ class WebVizController:
     Launch a FastAPI + D3 visualisation server for live sampler updates.
     """
 
-    def __init__(self, graph: TVGraph, config: WebVizConfig) -> None:
+    def __init__(
+        self,
+        graph: TVGraph,
+        config: WebVizConfig,
+        *,
+        run_metadata: dict[str, Any] | None = None,
+    ) -> None:
         self.graph = graph
         self.config = config
+        self._run_metadata = dict(run_metadata or {})
 
         self._static_dir = (config.static_dir or Path(__file__).with_name("web_viz_static")).resolve()
         if not self._static_dir.exists():
@@ -409,7 +416,7 @@ class WebVizController:
             lat_range = [0.0, 0.0]
             lon_range = [0.0, 0.0]
 
-        return {
+        payload: Dict[str, Any] = {
             "run_name": self._run_label,
             "station_count": self.graph.station_count,
             "channel_count": self.graph.channel_count,
@@ -418,6 +425,8 @@ class WebVizController:
             "lat_range": lat_range,
             "lon_range": lon_range,
         }
+        payload.update(self._run_metadata)
+        return payload
 
     def _compute_violation_masks(self, assignment: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         domain_matrix = self.graph.domain_mask

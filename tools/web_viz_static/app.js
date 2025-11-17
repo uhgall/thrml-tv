@@ -254,7 +254,8 @@
       .attr("viewBox", `0 0 ${width} ${height}`)
       .attr("preserveAspectRatio", "xMidYMid meet");
 
-    const lonRange = state.graph.lon_range ?? [0, 1];
+    const lonRangeRaw = state.graph.lon_range ?? [0, 1];
+    const lonRange = lonRangeRaw.map((value) => -value).sort((a, b) => a - b);
     const latRange = state.graph.lat_range ?? [0, 1];
 
     const xScale = d3.scaleLinear().domain(lonRange).range([margin.left, width - margin.right]);
@@ -270,42 +271,85 @@
       target: stations[pair[1]],
     }));
 
-    const edgesGroup = svg.append("g").attr("class", "edges");
+    const viewport = svg.append("g").attr("class", "scatter-viewport");
+
+    const edgesGroup = viewport.append("g").attr("class", "edges");
     const edgeSelection = edgesGroup
       .selectAll("line")
       .data(edgeData, (d) => d.index)
       .join("line")
-      .attr("x1", (d) => xScale(d.source.lon))
+      .attr("x1", (d) => xScale(-d.source.lon))
       .attr("y1", (d) => yScale(d.source.lat))
-      .attr("x2", (d) => xScale(d.target.lon))
+      .attr("x2", (d) => xScale(-d.target.lon))
       .attr("y2", (d) => yScale(d.target.lat));
 
-    const nodesGroup = svg.append("g").attr("class", "nodes");
+    const nodesGroup = viewport.append("g").attr("class", "nodes");
     const nodeSelection = nodesGroup
       .selectAll("circle")
       .data(stations, (d) => d.index)
       .join("circle")
-      .attr("cx", (d) => xScale(d.lon))
+      .attr("cx", (d) => xScale(-d.lon))
       .attr("cy", (d) => yScale(d.lat))
-      .attr("r", 5.5);
+      .attr("r", 2.8);
 
-    const labelGroup = svg.append("g").attr("class", "labels");
+    const labelGroup = viewport.append("g").attr("class", "labels");
     const labelSelection = labelGroup
       .selectAll("text")
       .data(stations, (d) => d.index)
       .join("text")
-      .attr("x", (d) => xScale(d.lon) + 8)
+      .attr("x", (d) => xScale(-d.lon) + 8)
       .attr("y", (d) => yScale(d.lat) - 6)
-      .text((d) => d.city);
+      .text((d) => d.city)
+      .attr("display", "none");
+
+    const tooltip = d3
+      .select("body")
+      .selectAll(".scatter-tooltip")
+      .data([null])
+      .join("div")
+      .attr("class", "scatter-tooltip")
+      .style("opacity", 0)
+      .style("pointer-events", "none");
+
+    function positionTooltip(event) {
+      tooltip
+        .style("left", `${event.pageX + 12}px`)
+        .style("top", `${event.pageY + 12}px`);
+    }
+
+    nodeSelection
+      .on("mouseenter", (event, d) => {
+        const cityLabel = d.city && d.city !== "" ? d.city : "Station";
+        tooltip.style("opacity", 1).text(`${cityLabel}: ${d.station_id}`);
+        positionTooltip(event);
+      })
+      .on("mousemove", (event) => {
+        positionTooltip(event);
+      })
+      .on("mouseleave", () => {
+        tooltip.style("opacity", 0);
+      });
+
+    const zoomBehavior = d3
+      .zoom()
+      .scaleExtent([0.5, 8])
+      .on("zoom", (event) => {
+        viewport.attr("transform", event.transform);
+      });
+
+    svg.call(zoomBehavior);
 
     visuals.scatter = {
       svg,
       xScale,
       yScale,
+      viewport,
       edgeSelection,
       nodeSelection,
       labelSelection,
       edgeData,
+      zoomBehavior,
+      tooltip,
     };
   }
 
@@ -549,11 +593,18 @@
       return;
     }
     const edgeCount = state.graph.edges ? state.graph.edges.length : 0;
-    meta.textContent = [
+    const entries = [
       state.graph.run_name ?? "Unnamed run",
       `${state.graph.station_count} stations`,
       `${edgeCount} edges`,
-    ].join(" • ");
+    ];
+    if (typeof state.graph.lambda_domain === "number") {
+      entries.push(`λ_domain ${state.graph.lambda_domain}`);
+    }
+    if (typeof state.graph.lambda_conflict === "number") {
+      entries.push(`λ_conflict ${state.graph.lambda_conflict}`);
+    }
+    meta.textContent = entries.join(" • ");
   }
 
   function updateControlsAvailability() {

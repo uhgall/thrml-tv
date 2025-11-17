@@ -707,7 +707,14 @@ def main(argv: list[str] | None = None) -> int:
                 block=not args.web_viz_no_block,
                 run_name=args.web_viz_run_name,
             )
-            controller = WebVizController(graph, config)
+            controller = WebVizController(
+                graph,
+                config,
+                run_metadata={
+                    "lambda_conflict": args.lambda_conflict,
+                    "lambda_domain": args.lambda_domain,
+                },
+            )
             controller.start()
             record_progress(f"→ Web visualisation running at {controller.url}")
             for line in progress_messages:

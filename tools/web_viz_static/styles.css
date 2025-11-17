@@ -109,6 +109,14 @@ main {
   min-height: 520px;
 }
 
+#scatter-container svg {
+  cursor: grab;
+}
+
+#scatter-container svg:active {
+  cursor: grabbing;
+}
+
 #energy-container {
   flex: 1 1 360px;
   min-height: 260px;
@@ -185,6 +193,20 @@ svg {
 .labels text.violation {
   fill: rgba(220, 38, 38, 0.95);
   font-weight: 600;
+}
+
+.scatter-tooltip {
+  position: fixed;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  padding: 0.3rem 0.55rem;
+  border-radius: 0.4rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.35);
+  z-index: 1000;
+  white-space: nowrap;
 }
 
 #legend {
