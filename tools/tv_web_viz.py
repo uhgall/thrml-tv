@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import sys
 import threading
 import time
 import webbrowser
@@ -61,6 +62,7 @@ class WebVizController:
         self._history_dir = config.history_dir.resolve()
         self._history_dir.mkdir(parents=True, exist_ok=True)
         self._history_path = self._history_dir / f"{self._run_label}.ndjson"
+        self._log_path = self._history_dir / f"{self._run_label}.log"
 
         self._graph_payload = self._build_graph_payload()
 
@@ -76,6 +78,11 @@ class WebVizController:
 
         self._history_fp: TextIO | None = None
         self._history_lock = threading.Lock()
+        self._log_fp: TextIO | None = None
+        self._log_lock = threading.Lock()
+        self._pending_logs: list[dict[str, Any]] = []
+        self._log_history: list[dict[str, Any]] = []
+        self._log_history_limit = 200
 
     @property
     def url(self) -> str:
@@ -101,6 +108,7 @@ class WebVizController:
             raise RuntimeError("Web visualiser already running.")
 
         self._history_fp = self._history_path.open("w", encoding="utf-8", buffering=1)
+        self._log_fp = self._log_path.open("w", encoding="utf-8", buffering=1)
 
         config = uvicorn.Config(
             self._app,
@@ -122,6 +130,7 @@ class WebVizController:
 
         if self.config.auto_open:
             self._open_browser()
+        self.log("Web visualiser started.", level="info")
 
     def stop(self) -> None:
         """
@@ -130,6 +139,8 @@ class WebVizController:
 
         if self._server is None:
             return
+
+        self.log("Web visualiser stopping.", level="info")
 
         if self._loop and self._queue:
             future = asyncio.run_coroutine_threadsafe(self._queue.put(None), self._loop)
@@ -149,6 +160,10 @@ class WebVizController:
         if self._history_fp is not None:
             self._history_fp.close()
             self._history_fp = None
+
+        if self._log_fp is not None:
+            self._log_fp.close()
+            self._log_fp = None
 
     def is_running(self) -> bool:
         return self._server is not None and not self._server.should_exit
@@ -199,6 +214,84 @@ class WebVizController:
             with suppress(Exception):
                 future.result(timeout=2)
 
+    def log(
+        self,
+        message: str,
+        *,
+        level: str = "info",
+        broadcast: bool | None = None,
+        **extra: Any,
+    ) -> None:
+        """
+        Record a message and optionally broadcast it to connected clients.
+        """
+
+        payload = {
+            "type": "log",
+            "level": level,
+            "message": message,
+            "timestamp": time.time(),
+            "extra": extra or None,
+        }
+
+        formatted = f"[WebViz][{level.upper()}] {message}"
+        if extra:
+            formatted += f" {extra}"
+
+        level_lower = level.lower()
+        should_print = level_lower in {"error", "warn", "warning"}
+        if should_print:
+            if level_lower == "error":
+                print(formatted, file=sys.stderr)
+            else:
+                print(formatted)
+
+        if self._log_fp is not None:
+            timestamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            extra_payload = {key: value for key, value in extra.items() if value is not None}
+            line = f"{timestamp} [{level.upper()}] {message}"
+            if extra_payload:
+                line += f" {json.dumps(extra_payload, default=str, sort_keys=True)}"
+            with self._log_lock:
+                self._log_fp.write(line + "\n")
+                self._log_fp.flush()
+
+        should_broadcast = broadcast if broadcast is not None else level_lower not in {"info"}
+        if not should_broadcast:
+            return
+
+        self._log_history.append(payload)
+        if len(self._log_history) > self._log_history_limit:
+            self._log_history.pop(0)
+
+        if self._loop and self._queue:
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            if running_loop is self._loop:
+                try:
+                    self._queue.put_nowait(payload)
+                except asyncio.QueueFull:
+                    pass
+            else:
+                future = asyncio.run_coroutine_threadsafe(self._queue.put(payload), self._loop)
+                with suppress(Exception):
+                    future.result(timeout=2)
+        else:
+            self._pending_logs.append(payload)
+
+    def _flush_pending_logs(self) -> None:
+        if self._queue is None or not self._pending_logs:
+            return
+        for item in self._pending_logs:
+            try:
+                self._queue.put_nowait(item)
+            except asyncio.QueueFull:
+                break
+        self._pending_logs.clear()
+
     def _open_browser(self) -> None:
         try:
             webbrowser.open(self.url)
@@ -216,6 +309,7 @@ class WebVizController:
             self._clients = set()
             self._broadcast_task = asyncio.create_task(self._broadcast_loop())
             self._loop_ready.set()
+            self._flush_pending_logs()
 
         @app.on_event("shutdown")
         async def on_shutdown() -> None:
@@ -250,6 +344,14 @@ class WebVizController:
         async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.accept()
             self._clients.add(websocket)
+            client = getattr(websocket, "client", None)
+            client_id = f"{client.host}:{client.port}" if client else "unknown"
+            for entry in self._log_history:
+                try:
+                    await websocket.send_json(entry)
+                except Exception:
+                    break
+            self.log("Web client connected.", client=client_id, broadcast=False)
             try:
                 while True:
                     await websocket.receive_text()
@@ -257,6 +359,7 @@ class WebVizController:
                 pass
             finally:
                 self._clients.discard(websocket)
+                self.log("Web client disconnected.", client=client_id)
 
         return app
 
@@ -267,6 +370,7 @@ class WebVizController:
         while True:
             message = await self._queue.get()
             if message is None:
+                self._queue.task_done()
                 break
 
             dead: list[WebSocket] = []

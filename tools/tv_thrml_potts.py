@@ -28,7 +28,7 @@ import argparse
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence, TYPE_CHECKING
+from typing import Iterable, Sequence, TYPE_CHECKING, Callable
 
 import jax
 import jax.numpy as jnp
@@ -39,6 +39,11 @@ try:  # pragma: no cover - allow running as script or module
     from .tv_graph import TVGraph
 except ImportError:  # pragma: no cover
     from tv_graph import TVGraph
+
+try:  # pragma: no cover
+    from .tv_graph_stats import compute_graph_stats
+except ImportError:  # pragma: no cover
+    from tv_graph_stats import compute_graph_stats
 
 from thrml import Block, BlockGibbsSpec, FactorSamplingProgram, SamplingSchedule, sample_states
 from thrml.block_management import block_state_to_global
@@ -66,7 +71,72 @@ class PottsComponents:
     init_state: list[jnp.ndarray]
 
 
-def _make_domain_factor(graph: TVGraph, nodes: Sequence[CategoricalNode], penalty: float) -> CategoricalEBMFactor:
+def _emit_log(message: str, log_fn: Callable[[str], None] | None) -> None:
+    """
+    Dispatch a status message to the provided logger or stdout.
+    """
+
+    if log_fn is not None:
+        log_fn(message)
+    else:
+        print(message)
+
+
+def _summarise_graph_stats(graph: TVGraph) -> list[str]:
+    """
+    Produce concise graph statistics for console and web logging.
+    """
+
+    stats = compute_graph_stats(graph)
+    domain_violations, interference_violations = graph.assignment_violations()
+
+    summary = [
+        f"Stations: {stats['station_count']:,}",
+        f"Channels: {stats['channel_count']:,}",
+        (
+            "Domain size avg/min/max: "
+            f"{stats['domain_avg']:.2f} / {stats['domain_min']} / {stats['domain_max']}"
+        ),
+        (
+            "Directional constraints: "
+            f"{stats['constraint_total']:,} (avg {stats['constraint_avg']:.2f} per station)"
+        ),
+        (
+            "Constraint degree min/max: "
+            f"{stats['constraint_min']} / {stats['constraint_max']}"
+        ),
+        (
+            "Assignment violations — domain: "
+            f"{len(domain_violations):,}, interference: {len(interference_violations):,}"
+        ),
+    ]
+
+    type_counts: Counter[str] = stats["constraint_counts_by_type"]  # type: ignore[assignment]
+    if type_counts:
+        top_types = ", ".join(
+            f"{constraint_type}:{count:,}"
+            for constraint_type, count in type_counts.most_common(3)
+        )
+        summary.append(f"Constraint types: {top_types}")
+
+    top_by_constraints: Sequence[tuple[int, int]] = stats["top_by_constraints"]  # type: ignore[assignment]
+    if top_by_constraints:
+        top_station_id, top_constraint_count = top_by_constraints[0]
+        summary.append(
+            "Most constrained station: "
+            f"{top_station_id} ({top_constraint_count:,} directional edges)"
+        )
+
+    return summary
+
+
+def _make_domain_factor(
+    graph: TVGraph,
+    nodes: Sequence[CategoricalNode],
+    penalty: float,
+    *,
+    log_fn: Callable[[str], None] | None = None,
+) -> CategoricalEBMFactor:
     """
     Encode station-specific channel domains via a unary ``CategoricalEBMFactor``.
 
@@ -76,11 +146,16 @@ def _make_domain_factor(graph: TVGraph, nodes: Sequence[CategoricalNode], penalt
 
     station_count = len(nodes)
     channel_count = graph.channel_count
+    _emit_log(
+        f"    Building domain penalty matrix ({station_count} stations × {channel_count} channels).",
+        log_fn,
+    )
     weights = np.full((station_count, channel_count), -float(penalty), dtype=np.float32)
     for station in graph.stations_by_id.values():
         if station.station_index is None:
             raise ValueError(f"Station {station.station_id} is missing a contiguous index.")
         weights[station.station_index, station.domain_indices] = 0.0
+    _emit_log("    Domain penalty matrix populated.", log_fn)
     return CategoricalEBMFactor([Block(nodes)], jnp.asarray(weights))
 
 
@@ -88,17 +163,23 @@ def _make_interference_factor(
     graph: TVGraph,
     nodes: Sequence[CategoricalNode],
     penalty: float,
+    *,
+    log_fn: Callable[[str], None] | None = None,
 ) -> CategoricalEBMFactor | None:
     """
     Create a pairwise Potts factor that penalises channel combinations forbidden by FCC constraints.
     Collapse symmetric FCC rows and yield unique incompatibilities.
     """
 
+    _emit_log("    Aggregating interference constraints for Potts factor.", log_fn)
+    total_indexed = sum(1 for station in graph.stations_by_id.values() if station.station_index is not None)
     seen: set[tuple[int, int, int, int]] = set()
     constraint_rows: list[tuple[int, int, int, int]] = []
+    processed = 0
     for station in graph.stations_by_id.values():
         if station.station_index is None:
             continue
+        processed += 1
         a_idx = station.station_index
         for interference, partner_idx in station.interferences_deduped():
             a_chan_idx = interference.subject_channel_index
@@ -108,12 +189,28 @@ def _make_interference_factor(
                 raise ValueError(f"Duplicate constraint: {key}")
             seen.add(key)
             constraint_rows.append(key)
+        if processed % 10 == 0:
+            _emit_log(
+                f"      Processed {processed:,}/{total_indexed:,} stations "
+                f"(rows collected: {len(constraint_rows):,}).",
+                log_fn,
+            )
 
     if not constraint_rows:
         return None
 
+    _emit_log(
+        f"    Constraint aggregation complete: {len(constraint_rows):,} unique rows captured.",
+        log_fn,
+    )
+
     channel_count = graph.channel_count
     edge_count = len(constraint_rows)
+    _emit_log(
+        f"    Allocating pairwise penalty tensor: {edge_count:,} edges × "
+        f"{channel_count}×{channel_count} channels.",
+        log_fn,
+    )
     weights = np.zeros((edge_count, channel_count, channel_count), dtype=np.float32)
     head_nodes: list[CategoricalNode] = []
     tail_nodes: list[CategoricalNode] = []
@@ -122,12 +219,19 @@ def _make_interference_factor(
         head_nodes.append(nodes[a_idx])
         tail_nodes.append(nodes[b_idx])
         weights[idx, a_chan_idx, b_chan_idx] = -float(penalty)
+        if (idx + 1) % 250000 == 0:
+            _emit_log(f"      Populated {idx + 1:,}/{edge_count:,} pairwise entries.", log_fn)
 
     return CategoricalEBMFactor([Block(head_nodes), Block(tail_nodes)], jnp.asarray(weights))
 
 
 def _prepare_initial_state(
-    graph: TVGraph, free_blocks: Sequence[Block], seed: int, *, force_random: bool = False
+    graph: TVGraph,
+    free_blocks: Sequence[Block],
+    seed: int,
+    *,
+    force_random: bool = False,
+    log_fn: Callable[[str], None] | None = None,
 ) -> tuple[list[jnp.ndarray], int, int]:
     """
     Build the sampler's initial block state, preferring post-auction channel assignments unless
@@ -145,7 +249,10 @@ def _prepare_initial_state(
         if not force_random and new_channel is not None:
             if new_channel not in graph.channel_values:
                 channel_idx = graph.channel_count - 1
-                print(f"→ Station {station.station_id} has a new channel that is not in the graph channel set. Using the highest channel index, {channel_idx}.")
+                _emit_log(
+                    f"→ Station {station.station_id} has a new channel that is not in the graph channel set. Using the highest channel index, {channel_idx}.",
+                    log_fn,
+                )
             else:   
                 channel_idx = graph.channel_index_for_channel(new_channel)
             post_count += 1
@@ -167,6 +274,7 @@ def _build_thrml_components(
     lambda_domain: float,
     seed: int,
     force_random_init: bool = False,
+    log_fn: Callable[[str], None] | None = None,
 ) -> PottsComponents:
     """
     Convert the TVGraph into THRML nodes, factors, and a compiled sampling program.
@@ -175,15 +283,15 @@ def _build_thrml_components(
     nodes = [CategoricalNode() for _ in graph.station_ids_by_index]
     free_blocks = [Block([node]) for node in nodes]
 
-    print("→ Creating THRML categorical nodes (one per station) and single-node Gibbs blocks.")
-    domain_factor = _make_domain_factor(graph, nodes, penalty=lambda_domain)
-    print("→ Wiring domain factor: disallowed channels receive λ_domain energy penalty.")
-    conflict_factor = _make_interference_factor(graph, nodes, penalty=lambda_conflict)
+    _emit_log("→ Creating THRML categorical nodes (one per station) and single-node Gibbs blocks.", log_fn)
+    domain_factor = _make_domain_factor(graph, nodes, penalty=lambda_domain, log_fn=log_fn)
+    _emit_log("→ Wiring domain factor: disallowed channels receive λ_domain energy penalty.", log_fn)
+    conflict_factor = _make_interference_factor(graph, nodes, penalty=lambda_conflict, log_fn=log_fn)
     if conflict_factor is None:
-        print("→ No interference pairs detected; only unary factors are active.")
+        _emit_log("→ No interference pairs detected; only unary factors are active.", log_fn)
         factors: list[CategoricalEBMFactor] = [domain_factor]
     else:
-        print("→ Wiring pairwise Potts factor: λ_conflict penalises forbidden channel pairings.")
+        _emit_log("→ Wiring pairwise Potts factor: λ_conflict penalises forbidden channel pairings.", log_fn)
         factors = [domain_factor, conflict_factor]
 
     gibbs_spec = BlockGibbsSpec(
@@ -193,20 +301,21 @@ def _build_thrml_components(
     )
     samplers = [CategoricalGibbsConditional(graph.channel_count) for _ in free_blocks]
     program = FactorSamplingProgram(gibbs_spec, samplers, factors, other_interaction_groups=[])
-    print("→ Compiled FactorSamplingProgram with categorical Gibbs conditionals.")
+    _emit_log("→ Compiled FactorSamplingProgram with categorical Gibbs conditionals.", log_fn)
 
     init_state, init_post_count, init_random_count = _prepare_initial_state(
         graph,
         free_blocks,
         seed,
         force_random=force_random_init,
+        log_fn=log_fn,
     )
     if force_random_init:
-        print("→ Initial state seeded randomly from station domains (post-auction assignments ignored).")
+        _emit_log("→ Initial state seeded randomly from station domains (post-auction assignments ignored).", log_fn)
     else:
-        print("→ Initial state seeded from post-auction channels where available.")
+        _emit_log("→ Initial state seeded from post-auction channels where available.", log_fn)
 
-    print(f"→ Initial state: {init_post_count} post-auction, {init_random_count} random draws.")
+    _emit_log(f"→ Initial state: {init_post_count} post-auction, {init_random_count} random draws.", log_fn)
 
     return PottsComponents(
         program=program,
@@ -331,21 +440,28 @@ def _collect_samples_with_web_viz(
     samples: list[np.ndarray] = []
     step = 0
     last_assignment: np.ndarray | None = None
+    last_logged_step: int | None = None
 
     def maybe_update(current_step: int, force: bool = False) -> np.ndarray:
-        nonlocal last_assignment
-        should_refresh = force or (viz_every > 0 and current_step % viz_every == 0)
-        if not should_refresh and last_assignment is not None:
-            return last_assignment
-
+        nonlocal last_assignment, last_logged_step
         assignment = _block_assignment_to_array(state_free)
-        if force or (viz_every > 0 and current_step % viz_every == 0):
+        should_refresh = force or (viz_every > 0 and current_step % viz_every == 0)
+        if should_refresh and last_logged_step != current_step:
             energy = _evaluate_energy(components, state_free)
             viz.record_state(current_step, assignment, energy)
+            viz.log(
+                f"Step {current_step:,}: energy={energy:.2f}",
+                level="progress",
+            )
+            last_logged_step = current_step
         last_assignment = assignment
         return assignment
 
     maybe_update(step, force=True)
+    viz.log(
+        "Starting Gibbs sweeps (first update may pause for JIT compilation)…",
+        level="progress",
+    )
 
     for _ in range(schedule.n_warmup):
         step += 1
@@ -446,7 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-samples",
         "--samples",
         type=int,
-        default=10000,
+        default=3333,
         help="Number of samples to keep after warmup.",
     )
     parser.add_argument(
@@ -529,7 +645,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     graph = TVGraph(args.input)
-    print(f"Loaded graph with {graph.station_count:,} stations and {graph.channel_count:,} channels.")
+
+    controller: WebVizController | None = None
+    progress_messages: list[str] = []
+    progress_replay_done = False
+
+    def record_progress(message: str) -> None:
+        print(message)
+        progress_messages.append(message)
+        if controller is not None and progress_replay_done:
+            controller.log(message, level="progress", broadcast=True)
+
+    record_progress(f"Loaded graph with {graph.station_count:,} stations and {graph.channel_count:,} channels.")
+    graph_stats_lines = _summarise_graph_stats(graph)
+    record_progress("Graph statistics snapshot:")
+    for line in graph_stats_lines:
+        record_progress(f"  {line}")
 
     components = _build_thrml_components(
         graph,
@@ -537,15 +668,16 @@ def main(argv: list[str] | None = None) -> int:
         lambda_domain=args.lambda_domain,
         seed=args.seed,
         force_random_init=args.init_random,
+        log_fn=record_progress,
     )
 
     schedule = SamplingSchedule(n_warmup=args.warmup, n_samples=args.samples, steps_per_sample=args.steps_per_sample)
-    print(f"→ Running Gibbs sampling: warmup={schedule.n_warmup}, samples={schedule.n_samples}.")
+    record_progress(f"→ Running Gibbs sampling: warmup={schedule.n_warmup}, samples={schedule.n_samples}.")
 
     initial_assignment = _block_assignment_to_array(components.init_state)
     init_energy = _evaluate_energy(components, components.init_state)
     init_stats = _score_assignment(graph, initial_assignment)
-    print(
+    record_progress(
         f"Initial state: energy={init_energy:.2f}, "
         f"violations={init_stats['violations']}, "
         f"domain breaches={init_stats['domain_violations']}"
@@ -554,7 +686,6 @@ def main(argv: list[str] | None = None) -> int:
     if schedule.n_samples == 0:
         return 0
 
-    controller: WebVizController | None = None
     try:
         if args.web_viz:
             try:
@@ -578,7 +709,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             controller = WebVizController(graph, config)
             controller.start()
-            print(f"→ Web visualisation running at {controller.url}")
+            record_progress(f"→ Web visualisation running at {controller.url}")
+            for line in progress_messages:
+                controller.log(line, level="progress", broadcast=True)
+            progress_replay_done = True
 
         if controller is not None:
             viz_every = max(1, args.web_viz_every)
@@ -598,7 +732,7 @@ def main(argv: list[str] | None = None) -> int:
     best_index, best_stats, best_energy = _summarise_samples(graph, components, samples)
     best_assignment = samples[best_index]
 
-    print(
+    record_progress(
         f"Best sample #{best_index}: energy={best_energy:.2f}, "
         f"violations={best_stats['violations']}, "
         f"domain breaches={best_stats['domain_violations']}"
@@ -606,17 +740,17 @@ def main(argv: list[str] | None = None) -> int:
 
     violations_by_type = best_stats["violations_by_type"]
     if isinstance(violations_by_type, Counter) and violations_by_type:
-        print("Constraint hits by type:")
+        record_progress("Constraint hits by type:")
         for constraint_type, count in violations_by_type.most_common():
-            print(f"  {constraint_type:<8} {count}")
+            record_progress(f"  {constraint_type:<8} {count}")
 
     post_channels = graph.channel_values[best_assignment]
-    print("Sample assignment preview (station_id → channel):")
+    record_progress("Sample assignment preview (station_id → channel):")
     preview = min(10, graph.station_count)
     for station_id, channel in zip(graph.station_ids_by_index[:preview], post_channels[:preview]):
-        print(f"  {station_id:<8} → {channel}")
+        record_progress(f"  {station_id:<8} → {channel}")
     if graph.station_count > preview:
-        print("  … (truncated)")
+        record_progress("  … (truncated)")
 
     if controller is not None:
         if controller.config.block:

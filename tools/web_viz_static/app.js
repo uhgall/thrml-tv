@@ -10,6 +10,8 @@
   };
 
   const controls = {};
+  const logEntries = [];
+  const maxLogEntries = 200;
   const visuals = {};
 
   const palette = d3
@@ -19,30 +21,83 @@
 
   document.addEventListener("DOMContentLoaded", init);
 
-  async function init() {
-    try {
-      await fetchGraph();
-    } catch (error) {
-      console.error("Failed to load graph metadata", error);
+  function log(message, { level = "info", data } = {}) {
+    const timestamp = new Date().toISOString();
+    const formatted = `[${timestamp}] [${level.toUpperCase()}] ${message}${
+      data !== undefined ? ` ${JSON.stringify(data)}` : ""
+    }`;
+
+    // Browser console
+    switch (level) {
+      case "error":
+        console.error(formatted);
+        break;
+      case "warn":
+        console.warn(formatted);
+        break;
+      default:
+        console.log(formatted);
+    }
+
+    const messageLower = String(message).toLowerCase();
+    const shouldHide = messageLower.includes("web client connected");
+    if (shouldHide) {
       return;
     }
 
-    setupControls();
-    setupVisuals();
+    const uiEntry = [message, data !== undefined ? JSON.stringify(data) : ""]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
 
-    try {
-      await fetchHistory();
-    } catch (error) {
-      console.warn("History fetch failed", error);
+    if (!uiEntry) {
+      return;
     }
 
+    logEntries.push(uiEntry);
+    if (logEntries.length > maxLogEntries) {
+      logEntries.shift();
+    }
+    const output = document.getElementById("log-output");
+    if (output) {
+      output.textContent = logEntries.join("\n");
+      output.scrollTop = output.scrollHeight;
+    }
+  }
+
+  async function init() {
+    log("Initialising dashboard…");
+    try {
+      log("Fetching graph metadata…");
+      await fetchGraph();
+    } catch (error) {
+      log("Failed to load graph metadata", { level: "error", data: String(error) });
+      return;
+    }
+    log("Graph metadata loaded.");
+
+    setupControls();
+    setupVisuals();
+    log("Controls and visuals initialised.");
+
+    try {
+      log("Fetching history file…");
+      await fetchHistory();
+    } catch (error) {
+      log("History fetch failed", { level: "warn", data: String(error) });
+    }
+
+    log("Connecting WebSocket…");
     connectWebSocket();
 
     if (state.history.length) {
+      log(`Loaded ${state.history.length} history entries. Jumping to latest.`);
       setCurrentIndex(state.history.length - 1);
     } else {
+      log("No history entries available yet.");
       updateControlsAvailability();
     }
+    log("Dashboard ready.");
   }
 
   async function fetchGraph() {
@@ -86,24 +141,44 @@
     const url = `${protocol}://${window.location.host}/ws/state`;
     const socket = new WebSocket(url);
     state.socket = socket;
+    log(`WebSocket opening: ${url}`);
 
     socket.addEventListener("message", (event) => {
       try {
         const message = JSON.parse(event.data);
         if (message.type === "state") {
           pushState(message);
+        } else if (message.type === "log") {
+          log(message.message ?? "", {
+            level: message.level ?? "info",
+            data: message.extra ?? undefined,
+          });
+        } else {
+          log(`Unknown message type "${message.type}"`, {
+            level: "warn",
+            data: message,
+          });
         }
       } catch (error) {
-        console.warn("Received malformed websocket payload", error);
+        log("Received malformed websocket payload", { level: "warn", data: String(error) });
       }
     });
 
     socket.addEventListener("close", () => {
+      log("WebSocket closed; scheduling reconnect.", { level: "warn" });
       state.socket = null;
       if (state.reconnectTimer) {
         clearTimeout(state.reconnectTimer);
       }
       state.reconnectTimer = setTimeout(connectWebSocket, 2000);
+    });
+
+    socket.addEventListener("open", () => {
+      log("WebSocket connected.");
+    });
+
+    socket.addEventListener("error", (event) => {
+      log("WebSocket error", { level: "error", data: String(event) });
     });
   }
 
@@ -129,6 +204,7 @@
     });
 
     document.addEventListener("keydown", handleKeydown);
+    log("Controls wired.");
   }
 
   function handleKeydown(event) {

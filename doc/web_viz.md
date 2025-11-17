@@ -49,6 +49,7 @@ Warmup defaults to `0`, so omit `--warmup` unless you explicitly want burn-in sw
 
 - **Scatter plot (map view):** stations coloured by assignment, with domain violations (red outline) and interference violations (amber outline). Violating edges are rendered in red; labels highlight stations involved in any conflict.
 - **Energy chart (log scale):** cumulative energy trajectory on a logarithmic axis, including a marker for the currently selected sample (energies clamp to a small positive floor to keep the log defined).
+- **Event log:** rolling console of server/client status messages (startup, websocket reconnects, etc.) to help debugging.
 - **Playback controls:**
   - Buttons: play/pause, first/last, step forward/back.
   - Keyboard: `←/→` step, `Home/End` jump, `Space` play/pause.
