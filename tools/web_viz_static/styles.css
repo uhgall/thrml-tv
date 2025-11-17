@@ -77,11 +77,25 @@ main {
   width: 180px;
 }
 
+#lambda-slider {
+  width: 160px;
+}
+
+#lambda-slider-value {
+  min-width: 3.5rem;
+  display: inline-block;
+  text-align: right;
+}
+
 .slider-label {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   font-size: 0.95rem;
+}
+
+.slider-label sub {
+  font-size: 0.65em;
 }
 
 .mono {

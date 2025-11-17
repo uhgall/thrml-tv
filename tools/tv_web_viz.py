@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import sys
+import queue
 import threading
 import time
 import webbrowser
@@ -87,9 +88,11 @@ class WebVizController:
         self._history_lock = threading.Lock()
         self._log_fp: TextIO | None = None
         self._log_lock = threading.Lock()
-        self._pending_logs: list[dict[str, Any]] = []
+        self._pending_messages: list[dict[str, Any]] = []
+        self._control_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self._log_history: list[dict[str, Any]] = []
         self._log_history_limit = 200
+        self._latest_lambda_conflict: float | None = None
 
     @property
     def url(self) -> str:
@@ -271,6 +274,19 @@ class WebVizController:
         if len(self._log_history) > self._log_history_limit:
             self._log_history.pop(0)
 
+        self._enqueue_message(payload)
+
+    def _flush_pending_messages(self) -> None:
+        if self._queue is None or not self._pending_messages:
+            return
+        for item in self._pending_messages:
+            try:
+                self._queue.put_nowait(item)
+            except asyncio.QueueFull:
+                break
+        self._pending_messages.clear()
+
+    def _enqueue_message(self, payload: dict[str, Any]) -> None:
         if self._loop and self._queue:
             try:
                 running_loop = asyncio.get_running_loop()
@@ -287,23 +303,30 @@ class WebVizController:
                 with suppress(Exception):
                     future.result(timeout=2)
         else:
-            self._pending_logs.append(payload)
-
-    def _flush_pending_logs(self) -> None:
-        if self._queue is None or not self._pending_logs:
-            return
-        for item in self._pending_logs:
-            try:
-                self._queue.put_nowait(item)
-            except asyncio.QueueFull:
-                break
-        self._pending_logs.clear()
+            self._pending_messages.append(payload)
 
     def _open_browser(self) -> None:
         try:
             webbrowser.open(self.url)
         except Exception:
             pass
+
+    def _handle_control_message(self, message: str) -> None:
+        try:
+            payload = json.loads(message)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+
+        msg_type = payload.get("type")
+        if msg_type == "set_lambda_conflict":
+            value = payload.get("value")
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                return
+            self._control_queue.put({"type": "set_lambda_conflict", "value": numeric_value})
 
     def _create_app(self) -> FastAPI:
         app = FastAPI()
@@ -316,7 +339,7 @@ class WebVizController:
             self._clients = set()
             self._broadcast_task = asyncio.create_task(self._broadcast_loop())
             self._loop_ready.set()
-            self._flush_pending_logs()
+            self._flush_pending_messages()
 
         @app.on_event("shutdown")
         async def on_shutdown() -> None:
@@ -358,10 +381,18 @@ class WebVizController:
                     await websocket.send_json(entry)
                 except Exception:
                     break
+            if self._latest_lambda_conflict is not None:
+                try:
+                    await websocket.send_json(
+                        {"type": "lambda_conflict", "value": self._latest_lambda_conflict}
+                    )
+                except Exception:
+                    pass
             self.log("Web client connected.", client=client_id, broadcast=False)
             try:
                 while True:
-                    await websocket.receive_text()
+                    message = await websocket.receive_text()
+                    self._handle_control_message(message)
             except WebSocketDisconnect:
                 pass
             finally:
@@ -393,6 +424,22 @@ class WebVizController:
                 self._clients.discard(client)
 
             self._queue.task_done()
+
+    def poll_control_updates(self) -> list[dict[str, Any]]:
+        updates: list[dict[str, Any]] = []
+        while True:
+            try:
+                updates.append(self._control_queue.get_nowait())
+            except queue.Empty:
+                break
+        return updates
+
+    def broadcast_lambda_conflict(self, value: float) -> None:
+        numeric = float(value)
+        self._latest_lambda_conflict = numeric
+        self._graph_payload["lambda_conflict"] = numeric
+        payload = {"type": "lambda_conflict", "value": numeric}
+        self._enqueue_message(payload)
 
     def _build_graph_payload(self) -> Dict[str, Any]:
         stations_payload: List[Dict[str, Any]] = []

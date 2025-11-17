@@ -30,10 +30,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence, TYPE_CHECKING, Callable
 
-import os
-
-os.environ.setdefault("JAX_LOG_COMPILES", "1")
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -73,7 +69,8 @@ class PottsComponents:
     factors: list[CategoricalEBMFactor]
     free_blocks: list[Block]
     init_state: list[jnp.ndarray]
-    lambda_conflict: float
+    lambda_conflict_initial: float
+    lambda_conflict_current: float
     conflict_factor_index: int | None
     conflict_base_weights: jnp.ndarray | None
 
@@ -334,7 +331,8 @@ def _build_thrml_components(
         factors=factors,
         free_blocks=free_blocks,
         init_state=init_state,
-        lambda_conflict=lambda_conflict,
+        lambda_conflict_initial=lambda_conflict,
+        lambda_conflict_current=lambda_conflict,
         conflict_factor_index=conflict_factor_index,
         conflict_base_weights=conflict_base_weights,
     )
@@ -348,22 +346,42 @@ def _block_assignment_to_array(block_state: Sequence[ArrayLike]) -> np.ndarray:
     return np.asarray([int(np.asarray(block).item()) for block in block_state], dtype=np.int32)
 
 
-def _set_conflict_penalty_scale(components: PottsComponents, scale: float) -> float | None:
+def _set_conflict_penalty_value(components: PottsComponents, new_value: float) -> float | None:
     """
-    Update the conflict factor weights using a multiplicative scale.
+    Update the conflict factor weights to match a new λ_conflict value.
     """
 
     index = components.conflict_factor_index
     base_weights = components.conflict_base_weights
-    if index is None or base_weights is None:
+    initial = components.lambda_conflict_initial
+    if (
+        index is None
+        or base_weights is None
+        or initial == 0.0
+    ):
         return None
 
+    scale = float(new_value) / float(initial)
     factor = components.factors[index]
-    scaled_weights = base_weights * float(scale)
-    new_factor = CategoricalEBMFactor(factor.blocks, scaled_weights)
-    components.factors[index] = new_factor
-    components.program.factors[index] = new_factor
-    return components.lambda_conflict * float(scale)
+    scaled_weights = base_weights * scale
+
+    # Try to mutate the existing factor in place; fall back to recreating it.
+    updated_factor: CategoricalEBMFactor
+    try:
+        object.__setattr__(factor, "weights", scaled_weights)
+        updated_factor = factor
+    except Exception:
+        updated_factor = CategoricalEBMFactor(factor.blocks, scaled_weights)
+        components.factors[index] = updated_factor
+
+    try:
+        components.program.factors[index] = updated_factor  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    components.factors[index] = updated_factor
+    components.lambda_conflict_current = float(new_value)
+    return components.lambda_conflict_current
 
 
 def _evaluate_energy(components: PottsComponents, block_state: Sequence[jnp.ndarray]) -> float:
@@ -474,14 +492,19 @@ def _collect_samples_with_web_viz(
     step = 0
     last_assignment: np.ndarray | None = None
     last_logged_step: int | None = None
-    lambda_scale = 1.0
 
-    def decay_conflict_penalty() -> float | None:
-        nonlocal lambda_scale
-        if components.conflict_factor_index is None:
-            return None
-        lambda_scale *= 0.99
-        return _set_conflict_penalty_scale(components, lambda_scale)
+    def apply_control_updates() -> None:
+        updates = viz.poll_control_updates()
+        for update in updates:
+            if update.get("type") == "set_lambda_conflict":
+                try:
+                    target = float(update["value"])
+                except (TypeError, ValueError):
+                    continue
+                applied = _set_conflict_penalty_value(components, target)
+                if applied is not None:
+                    viz.log(f"λ_conflict updated to {applied:.4f}", level="progress")
+                    viz.broadcast_lambda_conflict(applied)
 
     def maybe_update(current_step: int, force: bool = False) -> np.ndarray:
         nonlocal last_assignment, last_logged_step
@@ -505,9 +528,11 @@ def _collect_samples_with_web_viz(
     )
     if components.conflict_factor_index is not None:
         viz.log(
-            f"Initial λ_conflict: {components.lambda_conflict:.4f}",
+            f"Initial λ_conflict: {components.lambda_conflict_current:.4f}",
             level="progress",
         )
+        viz.broadcast_lambda_conflict(components.lambda_conflict_current)
+    apply_control_updates()
 
     for _ in range(schedule.n_warmup):
         step += 1
@@ -520,12 +545,11 @@ def _collect_samples_with_web_viz(
             sampler_states,
         )
         maybe_update(step)
+        apply_control_updates()
 
     assignment = maybe_update(step, force=True)
     samples.append(assignment.copy())
-    new_lambda = decay_conflict_penalty()
-    if new_lambda is not None:
-        viz.log(f"λ_conflict scaled to {new_lambda:.4f}", level="progress")
+    apply_control_updates()
 
     for _ in range(1, schedule.n_samples):
         for _ in range(schedule.steps_per_sample):
@@ -539,11 +563,10 @@ def _collect_samples_with_web_viz(
                 sampler_states,
             )
             maybe_update(step)
+            apply_control_updates()
         assignment = maybe_update(step, force=True)
         samples.append(assignment.copy())
-        new_lambda = decay_conflict_penalty()
-        if new_lambda is not None:
-            viz.log(f"λ_conflict scaled to {new_lambda:.4f}", level="progress")
+        apply_control_updates()
 
     return np.stack(samples, axis=0)
 
@@ -689,12 +712,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional label for the web visualisation run; defaults to a timestamp.",
     )
+    parser.add_argument(
+        "--jax-log-compiles",
+        action="store_true",
+        help="Enable verbose JAX compile logging (defaults to disabled).",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    compile_logging_enabled = False
+    if args.jax_log_compiles:
+        jax.config.update("jax_log_compiles", True)
+        compile_logging_enabled = True
 
     graph = TVGraph(args.input)
 
@@ -708,11 +741,20 @@ def main(argv: list[str] | None = None) -> int:
         if controller is not None and progress_replay_done:
             controller.log(message, level="progress", broadcast=True)
 
+    if compile_logging_enabled:
+        record_progress("JAX compile logging enabled (jax_log_compiles=True).")
+
     record_progress(f"Loaded graph with {graph.station_count:,} stations and {graph.channel_count:,} channels.")
     graph_stats_lines = _summarise_graph_stats(graph)
     record_progress("Graph statistics snapshot:")
     for line in graph_stats_lines:
         record_progress(f"  {line}")
+
+    devices = jax.devices()
+    devices_summary = ", ".join(str(device) for device in devices) or "none"
+    record_progress(f"JAX devices: {devices_summary}")
+    default_backend = jax.default_backend()
+    record_progress(f"JAX default backend: {default_backend}")
 
     components = _build_thrml_components(
         graph,

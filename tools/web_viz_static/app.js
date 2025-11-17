@@ -7,12 +7,15 @@
     playTimer: null,
     socket: null,
     reconnectTimer: null,
+    pendingLambdaConflict: null,
   };
 
   const controls = {};
   const logEntries = [];
   const maxLogEntries = 200;
   const visuals = {};
+  let lambdaSliderSendTimer = null;
+  let suppressLambdaSliderEmit = false;
 
   const palette = d3
     .schemeTableau10.concat(d3.schemeSet3 ?? [])
@@ -63,6 +66,77 @@
       output.textContent = logEntries.join("\n");
       output.scrollTop = output.scrollHeight;
     }
+  }
+
+  function configureLambdaSlider() {
+    if (!controls.lambdaSlider) {
+      return;
+    }
+    const base = state.graph?.lambda_conflict ?? 1;
+    const slider = controls.lambdaSlider;
+    slider.min = "0";
+    slider.max = String(Math.max(base * 2, base + 10));
+    slider.step = "0.1";
+    updateLambdaSliderUI(base, { updateGraph: true });
+  }
+
+  function updateLambdaSliderUI(value, { updateGraph = true } = {}) {
+    if (!controls.lambdaSlider) {
+      return;
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return;
+    }
+
+    const slider = controls.lambdaSlider;
+    const display = controls.lambdaSliderValue;
+    const currentMax = Number(slider.max);
+    if (!Number.isFinite(currentMax) || numeric > currentMax) {
+      slider.max = String(Math.max(numeric * 1.25, numeric + 1));
+    }
+
+    suppressLambdaSliderEmit = true;
+    slider.value = String(numeric);
+    suppressLambdaSliderEmit = false;
+
+    if (display) {
+      display.textContent = numeric.toFixed(2);
+    }
+
+    if (updateGraph && state.graph) {
+      state.graph.lambda_conflict = numeric;
+      updateMetadata();
+    }
+  }
+
+  function queueLambdaSliderSend(value) {
+    if (lambdaSliderSendTimer) {
+      clearTimeout(lambdaSliderSendTimer);
+    }
+    lambdaSliderSendTimer = setTimeout(() => {
+      sendLambdaSliderUpdate(value);
+    }, 150);
+  }
+
+  function sendLambdaSliderUpdate(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return;
+    }
+    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+      state.pendingLambdaConflict = numeric;
+      lambdaSliderSendTimer = null;
+      return;
+    }
+    state.socket.send(
+      JSON.stringify({
+        type: "set_lambda_conflict",
+        value: numeric,
+      })
+    );
+    state.pendingLambdaConflict = null;
+    lambdaSliderSendTimer = null;
   }
 
   async function init() {
@@ -148,6 +222,8 @@
         const message = JSON.parse(event.data);
         if (message.type === "state") {
           pushState(message);
+        } else if (message.type === "lambda_conflict") {
+          updateLambdaSliderUI(message.value, { updateGraph: true });
         } else if (message.type === "log") {
           log(message.message ?? "", {
             level: message.level ?? "info",
@@ -175,6 +251,14 @@
 
     socket.addEventListener("open", () => {
       log("WebSocket connected.");
+      if (state.pendingLambdaConflict != null) {
+        sendLambdaSliderUpdate(state.pendingLambdaConflict);
+      } else if (controls.lambdaSlider) {
+        const value = Number(controls.lambdaSlider.value);
+        if (Number.isFinite(value)) {
+          sendLambdaSliderUpdate(value);
+        }
+      }
     });
 
     socket.addEventListener("error", (event) => {
@@ -190,6 +274,8 @@
     controls.last = document.getElementById("last-step");
     controls.slider = document.getElementById("step-slider");
     controls.stepLabel = document.getElementById("step-label");
+    controls.lambdaSlider = document.getElementById("lambda-slider");
+    controls.lambdaSliderValue = document.getElementById("lambda-slider-value");
 
     controls.playToggle.addEventListener("click", () => togglePlay());
     controls.prev.addEventListener("click", () => stepBy(-1, { user: true }));
@@ -205,6 +291,34 @@
 
     document.addEventListener("keydown", handleKeydown);
     log("Controls wired.");
+
+    if (controls.lambdaSlider) {
+      configureLambdaSlider();
+      controls.lambdaSlider.addEventListener("input", (event) => {
+        const value = Number(event.target.value);
+        if (!Number.isFinite(value)) {
+          return;
+        }
+        if (controls.lambdaSliderValue) {
+          controls.lambdaSliderValue.textContent = value.toFixed(2);
+        }
+        if (state.graph) {
+          state.graph.lambda_conflict = value;
+          updateMetadata();
+        }
+        if (suppressLambdaSliderEmit) {
+          return;
+        }
+        queueLambdaSliderSend(value);
+      });
+      controls.lambdaSlider.addEventListener("change", (event) => {
+        const value = Number(event.target.value);
+        if (!Number.isFinite(value)) {
+          return;
+        }
+        queueLambdaSliderSend(value);
+      });
+    }
   }
 
   function handleKeydown(event) {
@@ -365,7 +479,7 @@
       .attr("preserveAspectRatio", "xMidYMid meet");
 
     const xScale = d3.scaleLinear().range([margin.left, width - margin.right]);
-    const yScale = d3.scaleLog().range([height - margin.bottom, margin.top]);
+    const yScale = d3.scaleLinear().range([height - margin.bottom, margin.top]);
 
     const xAxisGroup = svg
       .append("g")
@@ -391,12 +505,12 @@
       .attr("x", -height / 2)
       .attr("y", 16)
       .attr("text-anchor", "middle")
-      .text("Energy (log)");
+      .text("Edge Violations");
 
     const line = d3
       .line()
       .x((d) => xScale(d.step))
-      .y((d) => yScale(Math.max(1e-6, d.energy)))
+      .y((d) => yScale(d.edge_violation_count ?? 0))
       .curve(d3.curveMonotoneX);
 
     const path = svg.append("path").attr("class", "energy-line").attr("fill", "none").attr("stroke", "#2563eb").attr("stroke-width", 1.8);
@@ -547,20 +661,21 @@
       return;
     }
     const steps = state.history.map((d) => d.step);
-    const energies = state.history.map((d) => Math.max(1e-6, d.energy));
+    const counts = state.history.map((d) => Number(d.edge_violation_count ?? 0));
     const minStep = d3.min(steps) ?? 0;
     const maxStep = d3.max(steps) ?? minStep + 1;
-    const minEnergy = d3.min(energies) ?? 1e-6;
-    const maxEnergy = d3.max(energies) ?? minEnergy;
+    const minCount = d3.min(counts) ?? 0;
+    const maxCount = d3.max(counts) ?? minCount;
 
     energy.xScale.domain([minStep, maxStep === minStep ? minStep + 1 : maxStep]);
-    const lower = Math.max(1e-6, minEnergy * 0.95);
-    const upper = Math.max(1e-6, maxEnergy * 1.05);
+    const upper =
+      maxCount === minCount ? maxCount + 1 : maxCount * 1.05 + (maxCount >= 0 ? 0 : 1);
+    const lower = Math.min(0, minCount * 0.95);
     energy.yScale.domain([lower, upper]);
 
     energy.path.datum(state.history).attr("d", energy.line);
     energy.xAxisGroup.call(d3.axisBottom(energy.xScale).ticks(6).tickFormat(d3.format(",d")));
-    energy.yAxisGroup.call(d3.axisLeft(energy.yScale).ticks(6, "~g"));
+    energy.yAxisGroup.call(d3.axisLeft(energy.yScale).ticks(6).tickFormat(d3.format(",d")));
   }
 
   function renderEnergyMarker(entry) {
@@ -575,7 +690,7 @@
     energy.marker
       .attr("display", null)
       .attr("cx", energy.xScale(entry.step))
-      .attr("cy", energy.yScale(Math.max(1e-6, entry.energy)));
+      .attr("cy", energy.yScale(entry.edge_violation_count ?? 0));
   }
 
   function formatStepSummary(entry) {
