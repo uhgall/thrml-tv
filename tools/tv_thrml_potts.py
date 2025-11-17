@@ -9,13 +9,15 @@ The implementation mirrors ``raw_data/potts_model_approach.md``:
 3. Pairwise Potts factors penalise incompatible channel combinations from ``Interference_Paired.csv``.
 4. Block Gibbs sampling (``CategoricalGibbsConditional``) explores the Boltzmann distribution.
 
-Example:
+Quick start:
 
-    ./tools/tv_thrml_potts.py --input fcc-seed87-st5-ch7 --samples 200
+    ./tools/tv_thrml_potts.py -input fcc -samples 200
 
-With the web-based visualiser enabled:
+With live web viz:
 
-    ./tools/tv_thrml_potts.py --input fcc --samples 2000 --web-viz --web-viz-port 8765
+    ./tools/tv_thrml_potts.py -input fcc -samples 2000 -web-viz -web-viz-port 8765
+
+Each flag also accepts the traditional double-dash form (e.g. ``--input``).
 
 The script logs each THRML construction step so the mapping from FCC data to the sampler is explicit.
 """
@@ -413,66 +415,107 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sample Potts-model colourings for an FCC TVGraph using THRML.",
     )
     parser.add_argument(
+        "-input",
         "--input",
         type=Path,
         default=Path("fcc"),
         help="Folder under ./input/ containing Domain.csv, Interference_Paired.csv, post_auction_parameters.csv.",
     )
-    parser.add_argument("--lambda-conflict", type=float, default=8.0, help="Energy penalty for triggering a constraint.")
-    parser.add_argument("--lambda-domain", type=float, default=100.0, help="Penalty for leaving a station domain.")
-    parser.add_argument("--warmup", type=int, default=0, help="Number of warmup sweeps before sampling (defaults to 0).")
-    parser.add_argument("--samples", type=int, default=10000, help="Number of samples to keep after warmup.")
     parser.add_argument(
+        "-lambda-conflict",
+        "--lambda-conflict",
+        type=float,
+        default=8.0,
+        help="Energy penalty for triggering a constraint.",
+    )
+    parser.add_argument(
+        "-lambda-domain",
+        "--lambda-domain",
+        type=float,
+        default=100.0,
+        help="Penalty for leaving a station domain.",
+    )
+    parser.add_argument(
+        "-warmup",
+        "--warmup",
+        type=int,
+        default=0,
+        help="Number of warmup sweeps before sampling (defaults to 0).",
+    )
+    parser.add_argument(
+        "-samples",
+        "--samples",
+        type=int,
+        default=10000,
+        help="Number of samples to keep after warmup.",
+    )
+    parser.add_argument(
+        "-steps-per-sample",
         "--steps-per-sample",
         type=int,
         default=1,
         help="Gibbs sweeps between stored samples (thinning).",
     )
-    parser.add_argument("--seed", type=int, default=0, help="Random seed for initial state and sampling.")
     parser.add_argument(
+        "-seed",
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for initial state and sampling.",
+    )
+    parser.add_argument(
+        "-init-random",
         "--init-random",
         action="store_true",
         help="Ignore post-auction channel assignments and randomise the initial state.",
     )
     parser.add_argument(
+        "-web-viz",
         "--web-viz",
         action="store_true",
         help="Serve a live D3 visualisation via FastAPI during sampling.",
     )
     parser.add_argument(
+        "-web-viz-host",
         "--web-viz-host",
         default="127.0.0.1",
         help="Hostname interface for the web visualisation server.",
     )
     parser.add_argument(
+        "-web-viz-port",
         "--web-viz-port",
         type=int,
         default=8765,
         help="Port for the web visualisation server.",
     )
     parser.add_argument(
+        "-web-viz-history-dir",
         "--web-viz-history-dir",
         type=Path,
         default=Path("runs"),
         help="Directory for NDJSON history logs emitted by the web visualiser.",
     )
     parser.add_argument(
+        "-web-viz-no-open",
         "--web-viz-no-open",
         action="store_true",
         help="Skip automatically opening the browser when --web-viz is enabled.",
     )
     parser.add_argument(
+        "-web-viz-no-block",
         "--web-viz-no-block",
         action="store_true",
         help="Do not block after sampling when --web-viz is enabled.",
     )
     parser.add_argument(
+        "-web-viz-every",
         "--web-viz-every",
         type=int,
         default=1,
         help="Number of Gibbs sweeps between visual updates when --web-viz is enabled.",
     )
     parser.add_argument(
+        "-web-viz-run-name",
         "--web-viz-run-name",
         type=str,
         default=None,
