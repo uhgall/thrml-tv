@@ -30,6 +30,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence, TYPE_CHECKING, Callable
 
+import os
+
+os.environ.setdefault("JAX_LOG_COMPILES", "1")
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -69,6 +73,9 @@ class PottsComponents:
     factors: list[CategoricalEBMFactor]
     free_blocks: list[Block]
     init_state: list[jnp.ndarray]
+    lambda_conflict: float
+    conflict_factor_index: int | None
+    conflict_base_weights: jnp.ndarray | None
 
 
 def _emit_log(message: str, log_fn: Callable[[str], None] | None) -> None:
@@ -165,7 +172,7 @@ def _make_interference_factor(
     penalty: float,
     *,
     log_fn: Callable[[str], None] | None = None,
-) -> CategoricalEBMFactor | None:
+) -> tuple[CategoricalEBMFactor, jnp.ndarray] | None:
     """
     Create a pairwise Potts factor that penalises channel combinations forbidden by FCC constraints.
     Collapse symmetric FCC rows and yield unique incompatibilities.
@@ -222,7 +229,8 @@ def _make_interference_factor(
         if (idx + 1) % 250000 == 0:
             _emit_log(f"      Populated {idx + 1:,}/{edge_count:,} pairwise entries.", log_fn)
 
-    return CategoricalEBMFactor([Block(head_nodes), Block(tail_nodes)], jnp.asarray(weights))
+    weights_jnp = jnp.asarray(weights)
+    return CategoricalEBMFactor([Block(head_nodes), Block(tail_nodes)], weights_jnp), weights_jnp
 
 
 def _prepare_initial_state(
@@ -286,13 +294,17 @@ def _build_thrml_components(
     _emit_log("→ Creating THRML categorical nodes (one per station) and single-node Gibbs blocks.", log_fn)
     domain_factor = _make_domain_factor(graph, nodes, penalty=lambda_domain, log_fn=log_fn)
     _emit_log("→ Wiring domain factor: disallowed channels receive λ_domain energy penalty.", log_fn)
-    conflict_factor = _make_interference_factor(graph, nodes, penalty=lambda_conflict, log_fn=log_fn)
-    if conflict_factor is None:
+    conflict_factor_tuple = _make_interference_factor(graph, nodes, penalty=lambda_conflict, log_fn=log_fn)
+    conflict_factor_index: int | None = None
+    conflict_base_weights: jnp.ndarray | None = None
+    if conflict_factor_tuple is None:
         _emit_log("→ No interference pairs detected; only unary factors are active.", log_fn)
         factors: list[CategoricalEBMFactor] = [domain_factor]
     else:
         _emit_log("→ Wiring pairwise Potts factor: λ_conflict penalises forbidden channel pairings.", log_fn)
+        conflict_factor, conflict_base_weights = conflict_factor_tuple
         factors = [domain_factor, conflict_factor]
+        conflict_factor_index = len(factors) - 1
 
     gibbs_spec = BlockGibbsSpec(
         free_super_blocks=free_blocks,
@@ -321,7 +333,10 @@ def _build_thrml_components(
         program=program,
         factors=factors,
         free_blocks=free_blocks,
-        init_state=init_state
+        init_state=init_state,
+        lambda_conflict=lambda_conflict,
+        conflict_factor_index=conflict_factor_index,
+        conflict_base_weights=conflict_base_weights,
     )
 
 
@@ -331,6 +346,24 @@ def _block_assignment_to_array(block_state: Sequence[ArrayLike]) -> np.ndarray:
     """
 
     return np.asarray([int(np.asarray(block).item()) for block in block_state], dtype=np.int32)
+
+
+def _set_conflict_penalty_scale(components: PottsComponents, scale: float) -> float | None:
+    """
+    Update the conflict factor weights using a multiplicative scale.
+    """
+
+    index = components.conflict_factor_index
+    base_weights = components.conflict_base_weights
+    if index is None or base_weights is None:
+        return None
+
+    factor = components.factors[index]
+    scaled_weights = base_weights * float(scale)
+    new_factor = CategoricalEBMFactor(factor.blocks, scaled_weights)
+    components.factors[index] = new_factor
+    components.program.factors[index] = new_factor
+    return components.lambda_conflict * float(scale)
 
 
 def _evaluate_energy(components: PottsComponents, block_state: Sequence[jnp.ndarray]) -> float:
@@ -441,6 +474,14 @@ def _collect_samples_with_web_viz(
     step = 0
     last_assignment: np.ndarray | None = None
     last_logged_step: int | None = None
+    lambda_scale = 1.0
+
+    def decay_conflict_penalty() -> float | None:
+        nonlocal lambda_scale
+        if components.conflict_factor_index is None:
+            return None
+        lambda_scale *= 0.99
+        return _set_conflict_penalty_scale(components, lambda_scale)
 
     def maybe_update(current_step: int, force: bool = False) -> np.ndarray:
         nonlocal last_assignment, last_logged_step
@@ -462,6 +503,11 @@ def _collect_samples_with_web_viz(
         "Starting Gibbs sweeps (first update may pause for JIT compilation)…",
         level="progress",
     )
+    if components.conflict_factor_index is not None:
+        viz.log(
+            f"Initial λ_conflict: {components.lambda_conflict:.4f}",
+            level="progress",
+        )
 
     for _ in range(schedule.n_warmup):
         step += 1
@@ -477,6 +523,9 @@ def _collect_samples_with_web_viz(
 
     assignment = maybe_update(step, force=True)
     samples.append(assignment.copy())
+    new_lambda = decay_conflict_penalty()
+    if new_lambda is not None:
+        viz.log(f"λ_conflict scaled to {new_lambda:.4f}", level="progress")
 
     for _ in range(1, schedule.n_samples):
         for _ in range(schedule.steps_per_sample):
@@ -492,6 +541,9 @@ def _collect_samples_with_web_viz(
             maybe_update(step)
         assignment = maybe_update(step, force=True)
         samples.append(assignment.copy())
+        new_lambda = decay_conflict_penalty()
+        if new_lambda is not None:
+            viz.log(f"λ_conflict scaled to {new_lambda:.4f}", level="progress")
 
     return np.stack(samples, axis=0)
 
