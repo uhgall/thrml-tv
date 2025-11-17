@@ -51,11 +51,3 @@ Start,"2015.11.02 13:18:47"
 Stations,,,,,,,,,,,,,,,,,,,,,,,,,,,,NoiseLimited,,TerrainLimited,,InterferenceFree,,,Antenna,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,ExtraFVs
 FacID,SrcKey,DTSKey,Site,FileNumber,AppID,Country,D,U,Call,Ch,FromCh,City,St,Lat,Lon,DTSDist,RCAMSL,HAAT,ERP,DA,AntID,Rot,Tilt,Offset,Mask,Type,InCountry,Area,Population,Area,Population,Area,Population,,0,10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200,210,220,230,240,250,260,270,280,290,300,310,320,330,340,350,,Az,FV,Az,FV,Az,FV,Az,FV,Az,FV,Az,FV
 21488,378,,0,"BLCDT20110307ACV",1565982,US,1,1,"KYES-TV",5,,"ANCHORAGE",AK,61.335735,149.515214,,614.500000,277.000000,15.0,DA,93311,0.000000,0.0,0,0,1,US,31860.2,392105,30393.4,391590,30393.4,391590,,0.987000,1.000000,0.977000,0.900000,0.791000,0.651000,0.506000,0.360000,0.232000,0.179000,0.149000,0.132000,0.134000,0.168000,0.196000,0.291000,0.432000,0.579000,0.726000,0.847000,0.943000,1.000000,0.991000,0.966000,0.898000,0.796000,0.681000,0.549000,0.430000,0.387000,0.400000,0.481000,0.619000,0.738000,0.851000,0.934000,
-
-## Exporting Subgraphs
-
-- Use `TVGraph.save_sub_graph(seed_station=87, station_limit=5, channel_limit=7)` to materialise a smaller dataset for experimentation.
-- The method performs a breadth-first search from the seed station and selects up to `station_limit` connected stations.
-- It trims channel domains to at most `channel_limit` unique channels shared across the selected stations.
-- The method writes `Domain.csv`, `parameters.csv`, and `Interference_Paired.csv` into a new directory named `<dataset>-seed<seed>-st<stations>-ch<channels>` under `input/`.
-- Existing directories with the same name are not overwritten; remove them manually before re-running if you need to regenerate a subset.

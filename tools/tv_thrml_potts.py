@@ -11,7 +11,11 @@ The implementation mirrors ``raw_data/potts_model_approach.md``:
 
 Example:
 
-    ./tools/tv_thrml_potts.py --input fcc-seed87-st5-ch7 --samples 200 --warmup 200
+    ./tools/tv_thrml_potts.py --input fcc-seed87-st5-ch7 --samples 200
+
+With the web-based visualiser enabled:
+
+    ./tools/tv_thrml_potts.py --input fcc --samples 2000 --web-viz --web-viz-port 8765
 
 The script logs each THRML construction step so the mapping from FCC data to the sampler is explicit.
 """
@@ -43,9 +47,9 @@ from thrml.pgm import CategoricalNode
 
 if TYPE_CHECKING:  # pragma: no cover
     try:
-        from .tv_live_viz import MatplotlibSamplerViz
+        from .tv_web_viz import WebVizController
     except ImportError:  # pragma: no cover
-        from tv_live_viz import MatplotlibSamplerViz
+        from tv_web_viz import WebVizController
 
 
 @dataclass(slots=True)
@@ -121,7 +125,7 @@ def _make_interference_factor(
 
 
 def _prepare_initial_state(
-    graph: TVGraph, free_blocks: Sequence[Block], seed: int
+    graph: TVGraph, free_blocks: Sequence[Block], seed: int, *, force_random: bool = False
 ) -> tuple[list[jnp.ndarray], int, int]:
     """
     Build the sampler's initial block state, preferring post-auction channel assignments.
@@ -135,7 +139,7 @@ def _prepare_initial_state(
         station_id = graph.station_id_for_index(station_index)
         station = graph.station(station_id)
         new_channel = station.new_channel
-        if new_channel is not None:
+        if not force_random and new_channel is not None:
             if new_channel not in graph.channel_values:
                 channel_idx = graph.channel_count - 1
                 print(f"→ Station {station.station_id} has a new channel that is not in the graph channel set. Using the highest channel index, {channel_idx}.")
@@ -159,6 +163,7 @@ def _build_thrml_components(
     lambda_conflict: float,
     lambda_domain: float,
     seed: int,
+    force_random_init: bool = False,
 ) -> PottsComponents:
     """
     Convert the TVGraph into THRML nodes, factors, and a compiled sampling program.
@@ -187,8 +192,16 @@ def _build_thrml_components(
     program = FactorSamplingProgram(gibbs_spec, samplers, factors, other_interaction_groups=[])
     print("→ Compiled FactorSamplingProgram with categorical Gibbs conditionals.")
 
-    init_state, init_post_count, init_random_count = _prepare_initial_state(graph, free_blocks, seed)
-    print("→ Initial state seeded from post-auction channels where available.")
+    init_state, init_post_count, init_random_count = _prepare_initial_state(
+        graph,
+        free_blocks,
+        seed,
+        force_random=force_random_init,
+    )
+    if force_random_init:
+        print("→ Initial state seeded randomly from station domains (post-auction assignments ignored).")
+    else:
+        print("→ Initial state seeded from post-auction channels where available.")
 
     print(f"→ Initial state: {init_post_count} post-auction, {init_random_count} random draws.")
 
@@ -290,22 +303,22 @@ def _collect_samples(components: PottsComponents, schedule: SamplingSchedule, se
     return np.stack(stacked, axis=1)
 
 
-def _collect_samples_with_viz(
+def _collect_samples_with_web_viz(
     components: PottsComponents,
     schedule: SamplingSchedule,
     seed: int,
-    viz: "MatplotlibSamplerViz",
+    viz: "WebVizController",
     *,
     viz_every: int,
 ) -> np.ndarray:
     """
-    Run block Gibbs sampling with a live Matplotlib visualisation.
+    Run block Gibbs sampling while streaming updates to the web visualiser.
     """
 
     if schedule.n_samples <= 0:
         return np.zeros((0, len(components.init_state)), dtype=np.int32)
     if schedule.steps_per_sample <= 0:
-        raise ValueError("steps_per_sample must be positive when using live visualisation.")
+        raise ValueError("steps_per_sample must be positive when using web visualisation.")
 
     key = jax.random.PRNGKey(seed ^ 0xFEED5EED)
     state_free = [jnp.asarray(block) for block in components.init_state]
@@ -323,10 +336,9 @@ def _collect_samples_with_viz(
             return last_assignment
 
         assignment = _block_assignment_to_array(state_free)
-        domain_mask, edge_mask = viz.compute_violation_masks(assignment)
         if force or (viz_every > 0 and current_step % viz_every == 0):
             energy = _evaluate_energy(components, state_free)
-            viz.update(current_step, assignment, domain_mask, edge_mask, energy)
+            viz.record_state(current_step, assignment, energy)
         last_assignment = assignment
         return assignment
 
@@ -407,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--lambda-conflict", type=float, default=8.0, help="Energy penalty for triggering a constraint.")
     parser.add_argument("--lambda-domain", type=float, default=100.0, help="Penalty for leaving a station domain.")
-    parser.add_argument("--warmup", type=int, default=0, help="Number of warmup sweeps before sampling.")
+    parser.add_argument("--warmup", type=int, default=0, help="Number of warmup sweeps before sampling (defaults to 0).")
     parser.add_argument("--samples", type=int, default=10000, help="Number of samples to keep after warmup.")
     parser.add_argument(
         "--steps-per-sample",
@@ -416,23 +428,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="Gibbs sweeps between stored samples (thinning).",
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed for initial state and sampling.")
-    parser.add_argument("--live-viz", action="store_true", help="Enable live Matplotlib visualisation during sampling.")
     parser.add_argument(
-        "--viz-every",
-        type=int,
-        default=10,
-        help="Number of Gibbs sweeps between visual updates when --live-viz is enabled.",
-    )
-    parser.add_argument(
-        "--viz-hide-edges",
+        "--init-random",
         action="store_true",
-        help="Disable drawing interference edges in the live visualisation.",
+        help="Ignore post-auction channel assignments and randomise the initial state.",
     )
     parser.add_argument(
-        "--viz-marker-size",
-        type=float,
-        default=36.0,
-        help="Marker size passed to Matplotlib when --live-viz is enabled.",
+        "--web-viz",
+        action="store_true",
+        help="Serve a live D3 visualisation via FastAPI during sampling.",
+    )
+    parser.add_argument(
+        "--web-viz-host",
+        default="127.0.0.1",
+        help="Hostname interface for the web visualisation server.",
+    )
+    parser.add_argument(
+        "--web-viz-port",
+        type=int,
+        default=8765,
+        help="Port for the web visualisation server.",
+    )
+    parser.add_argument(
+        "--web-viz-history-dir",
+        type=Path,
+        default=Path("runs"),
+        help="Directory for NDJSON history logs emitted by the web visualiser.",
+    )
+    parser.add_argument(
+        "--web-viz-no-open",
+        action="store_true",
+        help="Skip automatically opening the browser when --web-viz is enabled.",
+    )
+    parser.add_argument(
+        "--web-viz-no-block",
+        action="store_true",
+        help="Do not block after sampling when --web-viz is enabled.",
+    )
+    parser.add_argument(
+        "--web-viz-every",
+        type=int,
+        default=1,
+        help="Number of Gibbs sweeps between visual updates when --web-viz is enabled.",
+    )
+    parser.add_argument(
+        "--web-viz-run-name",
+        type=str,
+        default=None,
+        help="Optional label for the web visualisation run; defaults to a timestamp.",
     )
     return parser
 
@@ -449,6 +492,7 @@ def main(argv: list[str] | None = None) -> int:
         lambda_conflict=args.lambda_conflict,
         lambda_domain=args.lambda_domain,
         seed=args.seed,
+        force_random_init=args.init_random,
     )
 
     schedule = SamplingSchedule(n_warmup=args.warmup, n_samples=args.samples, steps_per_sample=args.steps_per_sample)
@@ -466,29 +510,47 @@ def main(argv: list[str] | None = None) -> int:
     if schedule.n_samples == 0:
         return 0
 
-    viz: MatplotlibSamplerViz | None = None
+    controller: WebVizController | None = None
+    try:
+        if args.web_viz:
+            try:
+                from .tv_web_viz import WebVizConfig, WebVizController  # type: ignore[redefinition]
+            except ImportError as exc:  # pragma: no cover
+                try:
+                    from tv_web_viz import WebVizConfig, WebVizController  # type: ignore[redefinition]
+                except ImportError:
+                    raise RuntimeError(
+                        "Web visualisation requires the fastapi and uvicorn packages. "
+                        "Install them via `pip install fastapi uvicorn`."
+                    ) from exc
 
-    if args.live_viz:
-        try:
-            from .tv_live_viz import MatplotlibSamplerViz
-        except ImportError:  # pragma: no cover
-            from tv_live_viz import MatplotlibSamplerViz
+            config = WebVizConfig(
+                host=args.web_viz_host,
+                port=args.web_viz_port,
+                history_dir=args.web_viz_history_dir,
+                auto_open=not args.web_viz_no_open,
+                block=not args.web_viz_no_block,
+                run_name=args.web_viz_run_name,
+            )
+            controller = WebVizController(graph, config)
+            controller.start()
+            print(f"→ Web visualisation running at {controller.url}")
 
-        viz = MatplotlibSamplerViz(
-            graph,
-            marker_size=args.viz_marker_size,
-            show_edges=not args.viz_hide_edges,
-        )
-        viz_every = max(1, args.viz_every)
-        samples = _collect_samples_with_viz(
-            components,
-            schedule,
-            seed=args.seed,
-            viz=viz,
-            viz_every=viz_every,
-        )
-    else:
-        samples = _collect_samples(components, schedule, seed=args.seed)
+        if controller is not None:
+            viz_every = max(1, args.web_viz_every)
+            samples = _collect_samples_with_web_viz(
+                components,
+                schedule,
+                seed=args.seed,
+                viz=controller,
+                viz_every=viz_every,
+            )
+        else:
+            samples = _collect_samples(components, schedule, seed=args.seed)
+    except Exception:
+        if controller is not None:
+            controller.stop()
+        raise
     best_index, best_stats, best_energy = _summarise_samples(graph, components, samples)
     best_assignment = samples[best_index]
 
@@ -512,8 +574,14 @@ def main(argv: list[str] | None = None) -> int:
     if graph.station_count > preview:
         print("  … (truncated)")
 
-    if viz is not None:
-        viz.block()
+    if controller is not None:
+        if controller.config.block:
+            try:
+                controller.block_until_interrupt()
+            finally:
+                controller.stop()
+        else:
+            controller.stop()
 
     return 0
 
