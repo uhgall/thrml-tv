@@ -50,6 +50,10 @@ if TYPE_CHECKING:  # pragma: no cover
         from .tv_live_viz import MatplotlibSamplerViz
     except ImportError:  # pragma: no cover
         from tv_live_viz import MatplotlibSamplerViz
+    try:
+        from .tv_live_viz_pyqtgraph import PyQtGraphSamplerViz
+    except ImportError:  # pragma: no cover
+        from tv_live_viz_pyqtgraph import PyQtGraphSamplerViz
 
 
 @dataclass(slots=True)
@@ -125,10 +129,11 @@ def _make_interference_factor(
 
 
 def _prepare_initial_state(
-    graph: TVGraph, free_blocks: Sequence[Block], seed: int
+    graph: TVGraph, free_blocks: Sequence[Block], seed: int, force_random_init: bool
 ) -> tuple[list[jnp.ndarray], int, int]:
     """
-    Build the sampler's initial block state, preferring post-auction channel assignments.
+    Build the sampler's initial block state, preferring post-auction channel assignments unless
+    ``force_random_init`` requests random initialisation within each station domain.
     """
 
     key = jax.random.PRNGKey(seed)
@@ -139,7 +144,7 @@ def _prepare_initial_state(
         station_id = graph.station_id_for_index(station_index)
         station = graph.station(station_id)
         new_channel = station.new_channel
-        if new_channel is not None:
+        if not force_random_init and new_channel is not None:
             if new_channel not in graph.channel_values:
                 channel_idx = graph.channel_count - 1
                 print(f"→ Station {station.station_id} has a new channel that is not in the graph channel set. Using the highest channel index, {channel_idx}.")
@@ -163,6 +168,7 @@ def _build_thrml_components(
     lambda_conflict: float,
     lambda_domain: float,
     seed: int,
+    force_random_init: bool,
 ) -> PottsComponents:
     """
     Convert the TVGraph into THRML nodes, factors, and a compiled sampling program.
@@ -191,8 +197,13 @@ def _build_thrml_components(
     program = FactorSamplingProgram(gibbs_spec, samplers, factors, other_interaction_groups=[])
     print("→ Compiled FactorSamplingProgram with categorical Gibbs conditionals.")
 
-    init_state, init_post_count, init_random_count = _prepare_initial_state(graph, free_blocks, seed)
-    print("→ Initial state seeded from post-auction channels where available.")
+    init_state, init_post_count, init_random_count = _prepare_initial_state(
+        graph, free_blocks, seed, force_random_init
+    )
+    if force_random_init:
+        print("→ Initial state forced to random draws within each station domain.")
+    else:
+        print("→ Initial state seeded from post-auction channels where available.")
 
     print(f"→ Initial state: {init_post_count} post-auction, {init_random_count} random draws.")
 
@@ -420,7 +431,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Gibbs sweeps between stored samples (thinning).",
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed for initial state and sampling.")
-    parser.add_argument("--live-viz", action="store_true", help="Enable live Matplotlib visualisation during sampling.")
+    parser.add_argument(
+        "--force-random-init",
+        action="store_true",
+        help="Ignore post-auction channels and sample every initial assignment uniformly within its domain.",
+    )
+    parser.add_argument(
+        "--live-viz",
+        action="store_true",
+        help="Enable live visualisation during sampling (Matplotlib by default).",
+    )
+    parser.add_argument("--viz-backend", choices=["matplotlib", "pyqtgraph"], default="matplotlib")
     parser.add_argument(
         "--viz-every",
         type=int,
@@ -436,7 +457,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--viz-marker-size",
         type=float,
         default=36.0,
-        help="Marker size passed to Matplotlib when --live-viz is enabled.",
+        help="Marker size passed to the visualisation backend when --live-viz is enabled.",
     )
     return parser
 
@@ -453,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
         lambda_conflict=args.lambda_conflict,
         lambda_domain=args.lambda_domain,
         seed=args.seed,
+        force_random_init=args.force_random_init,
     )
 
     schedule = SamplingSchedule(n_warmup=args.warmup, n_samples=args.samples, steps_per_sample=args.steps_per_sample)
@@ -470,19 +492,41 @@ def main(argv: list[str] | None = None) -> int:
     if schedule.n_samples == 0:
         return 0
 
-    viz: MatplotlibSamplerViz | None = None
+    viz: MatplotlibSamplerViz | "PyQtGraphSamplerViz" | None = None
 
     if args.live_viz:
-        try:
-            from .tv_live_viz import MatplotlibSamplerViz
-        except ImportError:  # pragma: no cover
-            from tv_live_viz import MatplotlibSamplerViz
+        backend = args.viz_backend
+        if backend == "matplotlib":
+            try:
+                from .tv_live_viz import MatplotlibSamplerViz as VizClass
+            except ImportError:  # pragma: no cover
+                from tv_live_viz import MatplotlibSamplerViz as VizClass
 
-        viz = MatplotlibSamplerViz(
-            graph,
-            marker_size=args.viz_marker_size,
-            show_edges=not args.viz_hide_edges,
-        )
+            viz = VizClass(
+                graph,
+                marker_size=args.viz_marker_size,
+                show_edges=not args.viz_hide_edges,
+            )
+        elif backend == "pyqtgraph":
+            try:
+                from .tv_live_viz_pyqtgraph import PyQtGraphSamplerViz as VizClass
+            except ImportError as exc:  # pragma: no cover
+                try:
+                    from tv_live_viz_pyqtgraph import PyQtGraphSamplerViz as VizClass
+                except ImportError:
+                    raise SystemExit(
+                        "PyQtGraph backend requested but pyqtgraph is not installed. "
+                        "Install pyqtgraph or choose --viz-backend matplotlib."
+                    ) from exc
+
+            viz = VizClass(
+                graph,
+                marker_size=args.viz_marker_size,
+                show_edges=not args.viz_hide_edges,
+            )
+        else:  # pragma: no cover
+            raise ValueError(f"Unsupported viz backend: {backend}")
+
         viz_every = max(1, args.viz_every)
         samples = _collect_samples_with_viz(
             components,

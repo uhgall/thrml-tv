@@ -55,6 +55,8 @@ class MatplotlibSamplerViz:
     history_edge_masks: List[np.ndarray] = field(init=False, repr=False)
     history_energies: List[float] = field(init=False, repr=False)
     current_index: int = field(init=False, repr=False)
+    _follow_latest: bool = field(init=False, repr=False)
+    _pending_refresh: bool = field(init=False, repr=False)
     _palette: np.ndarray = field(init=False, repr=False)
     _domain_ok_edge: np.ndarray = field(init=False, repr=False)
     _domain_violation_edge: np.ndarray = field(init=False, repr=False)
@@ -121,6 +123,8 @@ class MatplotlibSamplerViz:
         self.history_edge_masks = []
         self.history_energies = []
         self.current_index = -1
+        self._follow_latest = True
+        self._pending_refresh = False
 
         self.figure.canvas.mpl_connect("key_press_event", self._on_key_press)
 
@@ -209,9 +213,9 @@ class MatplotlibSamplerViz:
             self.history_edge_masks.append(edge_mask_arr)
             self.history_energies.append(energy_value)
 
-        new_index = len(self.history_steps) - 1
-        self._update_energy_plot()
-        self._set_current_index(new_index, force=True)
+        self._pending_refresh = True
+        if self._follow_latest:
+            self._refresh_latest(force=True)
 
     def _apply_state(self) -> None:
         if self.current_index < 0 or not self.history_steps:
@@ -317,27 +321,53 @@ class MatplotlibSamplerViz:
         y_max = max(energies.max(), 1e-6)
         self.energy_ax.set_ylim(y_min * 0.9, y_max * 1.1)
 
-    def _set_current_index(self, index: int, *, force: bool = False) -> None:
+    def _refresh_latest(self, *, force: bool = False) -> None:
         if not self.history_steps:
             return
-        index = max(0, min(index, len(self.history_steps) - 1))
+        self._update_energy_plot()
+        latest_index = len(self.history_steps) - 1
+        self._set_current_index(latest_index, force=force)
+        self._pending_refresh = False
+
+    def _set_current_index(self, index: int, *, force: bool = False, manual: bool = False) -> None:
+        if not self.history_steps:
+            return
+        max_index = len(self.history_steps) - 1
+        index = max(0, min(index, max_index))
+        refresh_latest_after = False
+        if manual:
+            self._follow_latest = index == max_index
+            if self._follow_latest and self._pending_refresh:
+                refresh_latest_after = True
         if not force and index == self.current_index:
             return
         self.current_index = index
         self._apply_state()
+        if refresh_latest_after:
+            self._update_energy_plot()
+            self._pending_refresh = False
+
+    def _toggle_follow_latest(self) -> None:
+        if not self.history_steps:
+            return
+        self._follow_latest = not self._follow_latest
+        if self._follow_latest:
+            self._refresh_latest(force=True)
 
     def _on_key_press(self, event) -> None:
         if not self.history_steps:
             return
 
         if event.key in ("left", "h"):
-            self._set_current_index(self.current_index - 1)
+            self._set_current_index(self.current_index - 1, manual=True)
         elif event.key in ("right", "l"):
-            self._set_current_index(self.current_index + 1)
+            self._set_current_index(self.current_index + 1, manual=True)
         elif event.key in ("home",):
-            self._set_current_index(0)
+            self._set_current_index(0, manual=True)
         elif event.key in ("end",):
-            self._set_current_index(len(self.history_steps) - 1)
+            self._set_current_index(len(self.history_steps) - 1, manual=True)
+        elif event.key in (" ", "space"):
+            self._toggle_follow_latest()
 
     def block(self) -> None:
         """
