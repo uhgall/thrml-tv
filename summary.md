@@ -1,21 +1,21 @@
 THRML-TV: Solving the $10B FCC Spectrum Repacking Problem with Thermodynamic Computing
 What We Built
-we used extropic's THRML framework to solve the real FCC TV spectrum repacking problem - assigning 2,047 broadcast stations to 34 channels without interference. this is an NP-complete graph coloring problem that traditionally takes hours with integer programming. our thermodynamic sampler finds zero-violation solutions in minutes.
+We used extropic's THRML framework to solve the real FCC TV spectrum repacking problem - assigning 2,047 broadcast stations to 34 channels without interference. This is an NP-complete graph coloring problem that traditionally takes hours with integer programming. Our thermodynamic sampler finds approximate solutions in minutes.
 The Demo
 
-full working implementation in python/JAX using THRML's energy-based modeling
+Full working implementation in python/JAX using THRML's energy-based modeling
 live visualization showing constraint violations dropping to zero in real-time
 actual FCC data from the 2016 incentive auction (2,047 stations, 34 channels, complex interference constraints)
 runs on CPU/GPU NOW, ready for extropic hardware LATER
 
 Why This Matters
-the FCC spent $10B+ buying back spectrum and needed to repack remaining stations without creating interference. this affects every TV broadcast in america. traditional solvers are SLOW and struggle with constraint density.
-our approach: map the problem directly to physics. channel assignment → potts model, interference constraints → energy penalties, finding solutions → thermodynamic sampling. the math WANTS to solve this problem.
+the FCC spent $10B+ buying back spectrum and needed to repack remaining stations without creating interference. This affects every TV broadcast in america. Traditional solvers are SLOW and struggle with constraint density.
+Our approach: map the problem directly to physics. Channel assignment → potts model, interference constraints → energy penalties, finding solutions → thermodynamic sampling. 
 Technical Implementation
 Core Innovation: Potts Model Encoding
-instead of binary spins (the usual approach), we use categorical variables - one per station with 34 possible states (channels). way cleaner:
+instead of binary spins (the usual approach), we use categorical variables - one per station with 34 possible states (channels). Way cleaner:
 Energy = λ_conflict × [interference violations] + λ_domain × [disallowed channels]
-minimize energy → satisfy all constraints. simple.
+minimize energy → satisfy all constraints.
 THRML Factor Graph
 
 2,047 categorical nodes (one per station)
@@ -44,7 +44,8 @@ hyperparameters that worked:
 λ_conflict = 8.0
 λ_domain = 100.0  
 warmup = 200 steps
-samples = 400 steps
+samples = 400 
+
 Why THRML Specifically
 this problem is perfect for thermodynamic computing bc:
 
