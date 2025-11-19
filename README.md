@@ -33,9 +33,9 @@ For details, see [doc/overview.md](doc/overview.md).
 
 ## Source Code 
 
-tv_graph.py parses the input files and produces an in-memory representation of the graph for convenient access to all the data
-
-tv_web_viz contains code to visualize the solver process while it is running. 
+- `lib/tv_graph.py` parses the FCC inputs and builds the in-memory graph representation used everywhere else.
+- `lib/tv_web_viz.py` (with static assets in `lib/web_viz_static/`) drives the live FastAPI/D3 visualiser for sampler runs.
+- `solver.py`, `graph_stats.py`, and `save_sub_graph.py` are CLI entry points you can run from the project root.
 
 
 

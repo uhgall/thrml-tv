@@ -16,15 +16,8 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import ArrayLike
 
-try:  # pragma: no cover - allow running as script or module
-    from .tv_graph import TVGraph
-except ImportError:  # pragma: no cover
-    from tv_graph import TVGraph
-
-try:  # pragma: no cover
-    from .tv_graph_stats import compute_graph_stats
-except ImportError:  # pragma: no cover
-    from tv_graph_stats import compute_graph_stats
+from lib.tv_graph import TVGraph
+from graph_stats import compute_graph_stats
 
 from thrml import Block, BlockGibbsSpec, FactorSamplingProgram, SamplingSchedule, sample_states
 from thrml.block_management import block_state_to_global
@@ -34,10 +27,7 @@ from thrml.models.ebm import DEFAULT_NODE_SHAPE_DTYPES
 from thrml.pgm import CategoricalNode
 
 if TYPE_CHECKING:  # pragma: no cover
-    try:
-        from .tv_web_viz import WebVizController
-    except ImportError:  # pragma: no cover
-        from tv_web_viz import WebVizController
+    from lib.tv_web_viz import WebVizController
 
 
 @dataclass(slots=True)
@@ -587,7 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sample Potts-model colourings for an FCC TVGraph using THRML.",
     )
     parser.add_argument(
-        "-input",
+        "-i",
         "--input",
         type=Path,
         default=Path("fcc"),
@@ -636,13 +626,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Random seed for initial state and sampling.",
     )
     parser.add_argument(
-        "-init-random",
+        "-r",
         "--init-random",
         action="store_true",
         help="Ignore post-auction channel assignments and randomise the initial state.",
     )
     parser.add_argument(
-        "-web-viz",
+        "-v",
         "--web-viz",
         action="store_true",
         help="Serve a live D3 visualisation via FastAPI during sampling.",
@@ -677,7 +667,11 @@ def build_parser() -> argparse.ArgumentParser:
         "-web-viz-no-block",
         "--web-viz-no-block",
         action="store_true",
-        help="Do not block after sampling when --web-viz is enabled.",
+        help=(
+            "If specified with --web-viz, the program will exit immediately after sampling completes "
+            "instead of keeping the web visualisation server running for further inspection. "
+            "Use this if you do not want to keep the web interface open after the run."
+        ),
     )
     parser.add_argument(
         "-web-viz-every",
@@ -764,15 +758,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.web_viz:
             try:
-                from .tv_web_viz import WebVizConfig, WebVizController  # type: ignore[redefinition]
+                from lib.tv_web_viz import WebVizConfig, WebVizController  # type: ignore[redefinition]
             except ImportError as exc:  # pragma: no cover
-                try:
-                    from tv_web_viz import WebVizConfig, WebVizController  # type: ignore[redefinition]
-                except ImportError:
-                    raise RuntimeError(
-                        "Web visualisation requires the fastapi and uvicorn packages. "
-                        "Install them via `pip install fastapi uvicorn`."
-                    ) from exc
+                raise RuntimeError(
+                    "Web visualisation requires the fastapi and uvicorn packages. "
+                    "Install them via `pip install fastapi uvicorn`."
+                ) from exc
 
             config = WebVizConfig(
                 host=args.web_viz_host,

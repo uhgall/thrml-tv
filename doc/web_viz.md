@@ -5,7 +5,7 @@ Vibe coded browser-based dashboard built on FastAPI, WebSockets, and D3. It stre
 ## Requirements
 
 - Python dependencies: `fastapi`, `uvicorn`, `jinja2` (installed automatically via FastAPI), and their transitive deps.
-- Front-end assets live in `tools/web_viz_static/`; no build step is required.
+- Front-end assets live in `lib/web_viz_static/`; no build step is required.
 
 Install the Python pieces (once per environment):
 
@@ -15,10 +15,10 @@ pip install fastapi uvicorn
 
 ## Running the sampler with the web UI
 
-Pass `--web-viz` to `tools/tv_thrml_potts.py`:
+Pass `--web-viz` to `solver.py`:
 
 ```bash
-./tools/tv_thrml_potts.py \
+./solver.py \
     --input fcc \
     --samples 2000 \
     --web-viz \

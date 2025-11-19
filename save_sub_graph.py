@@ -8,10 +8,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-try:  # pragma: no cover - allow running as script or module
-    from .tv_graph import TVGraph
-except ImportError:  # pragma: no cover
-    from tv_graph import TVGraph
+from lib.tv_graph import TVGraph
 
 
 def build_parser() -> argparse.ArgumentParser:

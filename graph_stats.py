@@ -10,10 +10,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable
 
-try:  # pragma: no cover - allow running as script or module
-    from .tv_graph import DomainViolation, InterferenceViolation, TVGraph
-except ImportError:  # pragma: no cover
-    from tv_graph import DomainViolation, InterferenceViolation, TVGraph
+from lib.tv_graph import DomainViolation, InterferenceViolation, TVGraph
 
 
 def _iter_constraints(graph: TVGraph) -> Iterable[tuple[int, int, int, int, str]]:
