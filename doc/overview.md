@@ -1,19 +1,26 @@
-# Graph Coloring with Extropic / THRML – First Principles Overview
+# Graph Coloring with Extropic / THRML 
+# The FCC's broadcast TV channel packing problem
 
-## 1. What problem are we actually solving?
+## 1. What problem are we solving?
 
-We have:
+Standard graph coloring problem:
 - A **graph** with
   - `N` vertices (nodes), e.g. TV stations or generic items
   - `M` edges, each edge `(u, v)` means “u and v conflict if they share the same resource”
-- A set of **K colors** (resources), e.g. channels 1..K.
+- A set of **K colors** 1..K.
 
 We want a **graph coloring**:
 - Assign each vertex `i` a color `c_i ∈ {0, 1, …, K-1}`
 - Such that **no edge is monochromatic**:
   - For every edge `(u, v)`, we want `c_u ≠ c_v`.
 
-In many real problems (like spectrum repacking), we don’t just need *any* coloring, but a **good** one under extra constraints. That’s where an optimization view helps.
+The particular problem implemented here is a variation of this problem: 
+- Nodes are TV broadcast stations
+-- Each station broadcasts on a particular channel;  this corresponds exactly to a color
+- Edges indicate different kinds of interference constraints. There can be more than 2 edges between a pair stations. Each edge indicates: If station A is on channel c_A, then station B cannot be on channel c_B because that would cause an unacceptable amount of interference.
+-- "CO"-channel interference: c_A = c_B
+-- "ADJ+N constraints: c_A = c_B + N
+- All constraints are symmetric, so for example for each ADJ+1 constraint, there is a corresponding ADJ-1 constraint with the station ordering reversed. 
 
 ---
 

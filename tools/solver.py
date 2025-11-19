@@ -1,25 +1,6 @@
 #!/usr/bin/env python3
 """
 Run a THRML Potts sampler on an FCC TVGraph.
-
-The implementation mirrors ``raw_data/potts_model_approach.md``:
-
-1. Each station becomes a ``CategoricalNode`` (one discrete variable per graph vertex).
-2. Unary factors encode per-station channel domains (energy penalty for leaving the domain).
-3. Pairwise Potts factors penalise incompatible channel combinations from ``Interference_Paired.csv``.
-4. Block Gibbs sampling (``CategoricalGibbsConditional``) explores the Boltzmann distribution.
-
-Quick start:
-
-    ./tools/tv_thrml_potts.py -input fcc -samples 200
-
-With live web viz:
-
-    ./tools/tv_thrml_potts.py -input fcc -samples 2000 -web-viz -web-viz-port 8765
-
-Each flag also accepts the traditional double-dash form (e.g. ``--input``).
-
-The script logs each THRML construction step so the mapping from FCC data to the sampler is explicit.
 """
 
 from __future__ import annotations

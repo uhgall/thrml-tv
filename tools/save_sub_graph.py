@@ -19,31 +19,31 @@ def build_parser() -> argparse.ArgumentParser:
         description="Export a BFS-limited FCC subgraph into a new input directory.",
     )
     parser.add_argument(
-        "--input",
+        "-i", "--input",
         type=Path,
         default=Path("fcc"),
         help="Subdirectory under ./input/ to load (default: fcc).",
     )
     parser.add_argument(
-        "--seed",
+        "-s", "--seed",
         type=int,
         default=87,
-        help="Seed station ID to start the breadth-first traversal (default: 87).",
+        help="Seed station ID to start the breadth-first traversal.",
     )
     parser.add_argument(
-        "--stations",
+        "-n", "--stations",
         type=int,
         default=50,
         help="Maximum number of stations to include",
     )
     parser.add_argument(
-        "--channels",
+        "-c", "--channels",
         type=int,
-        default=30,
-        help="Maximum number of unique channels to retain.",
+        default=15,
+        help="Maximum number of unique channels to retain across the subset.",
     )
     parser.add_argument(
-        "--drop-top-channels",
+        "-d", "--drop-top-channels",
         type=int,
         default=0,
         help="With --new-channel-only, drop the highest indexed domain channels (default: 0).",
@@ -52,13 +52,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--new-channel-only",
         action="store_true",
         help="Export every station with a post-auction channel assignment instead of running BFS.",
-    )
-    parser.add_argument(
-        "--remove-top-channel",
-        dest="drop_top_channels",
-        action="store_const",
-        const=1,
-        help=argparse.SUPPRESS,
     )
     return parser
 
@@ -77,7 +70,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"Subgraph saved to: {output_dir}")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

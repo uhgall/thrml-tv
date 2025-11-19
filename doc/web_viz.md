@@ -1,6 +1,6 @@
 # Web-Based Visualisation for THRML TV
 
-The Matplotlib/PyQt viewer has been replaced with a browser-based dashboard built on FastAPI, WebSockets, and D3. It streams sampler updates in real time, keeps the entire history on disk (NDJSON), and exposes controls for replaying runs.
+Vibe coded browser-based dashboard built on FastAPI, WebSockets, and D3. It streams sampler updates in real time, keeps the entire history on disk (NDJSON), and exposes controls for replaying runs.
 
 ## Requirements
 
@@ -39,7 +39,6 @@ Flags of note:
 | `--web-viz-no-open` | Disable automatic browser launch. |
 | `--web-viz-no-block` | Return to the shell immediately after sampling (server keeps writing during the run but shuts down once sampling ends). |
 | `--web-viz-run-name` | Custom label for the run (used in the dashboard and filenames). |
-| `--init-random` | Force the sampler to randomise the initial channel assignments (ignores post-auction data). |
 
 When `--web-viz` is active, the script starts the server in a background thread before sampling begins. The server streams updates while sampling runs and remains available afterward until you press `Ctrl+C` (or until `--web-viz-no-block` is set).
 

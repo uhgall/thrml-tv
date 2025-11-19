@@ -186,19 +186,19 @@ def build_parser() -> argparse.ArgumentParser:
         description="Summarise FCC interference datasets and verify constraint symmetry.",
     )
     parser.add_argument(
-        "--input",
+        "-i", "--input",
         type=Path,
         default=Path("default"),
         help="Subdirectory under ./input/ containing Domain.csv, Interference_Paired.csv, and parameters.csv (default: input/default).",
     )
     parser.add_argument(
-        "--top",
+        "-t", "--top",
         type=int,
         default=10,
         help="Number of stations to display in top constraints listing.",
     )
     parser.add_argument(
-        "--strict",
+        "-s", "--strict",
         action="store_true",
         help="Return exit code 1 when asymmetries are detected.",
     )

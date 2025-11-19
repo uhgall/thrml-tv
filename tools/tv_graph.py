@@ -106,7 +106,6 @@ class InterferenceViolation:
     other_station_id: int
     other_channel: int
 
-
 class TVGraph:
     """
     Container for stations, channel mappings, and interference data loaded from FCC inputs.

@@ -1,9 +1,9 @@
 
 
-
 # FCC Input Format
 
-Overview of the CSV files the FCC toolchain expects as input.
+Overview of the CSV files in input/fcc/.
+All data files included here are public information available on the FCC's website.
 
 ## `Domain.csv`
 
@@ -51,3 +51,24 @@ Start,"2015.11.02 13:18:47"
 Stations,,,,,,,,,,,,,,,,,,,,,,,,,,,,NoiseLimited,,TerrainLimited,,InterferenceFree,,,Antenna,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,ExtraFVs
 FacID,SrcKey,DTSKey,Site,FileNumber,AppID,Country,D,U,Call,Ch,FromCh,City,St,Lat,Lon,DTSDist,RCAMSL,HAAT,ERP,DA,AntID,Rot,Tilt,Offset,Mask,Type,InCountry,Area,Population,Area,Population,Area,Population,,0,10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200,210,220,230,240,250,260,270,280,290,300,310,320,330,340,350,,Az,FV,Az,FV,Az,FV,Az,FV,Az,FV,Az,FV
 21488,378,,0,"BLCDT20110307ACV",1565982,US,1,1,"KYES-TV",5,,"ANCHORAGE",AK,61.335735,149.515214,,614.500000,277.000000,15.0,DA,93311,0.000000,0.0,0,0,1,US,31860.2,392105,30393.4,391590,30393.4,391590,,0.987000,1.000000,0.977000,0.900000,0.791000,0.651000,0.506000,0.360000,0.232000,0.179000,0.149000,0.132000,0.134000,0.168000,0.196000,0.291000,0.432000,0.579000,0.726000,0.847000,0.943000,1.000000,0.991000,0.966000,0.898000,0.796000,0.681000,0.549000,0.430000,0.387000,0.400000,0.481000,0.619000,0.738000,0.851000,0.934000,
+
+# post_auction_parameters.csv
+
+This contains the new assignment of channels to the stations that stayed on the air post-auction.
+
+The table fields are as follows:
+
+- **FacID**: Numeric FCC Facility ID (primary key)
+- **Site**: FCC tower site index
+- **Call**: Station callsign (e.g., KYES-TV)
+- **Ch**: Post-auction RF channel
+- **PC**: Pre-auction RF channel
+- **City**: City of license
+- **St**: State/territory (2-letter code)
+- **Lat / Lon**: Transmitter coordinates (FCC integer format)
+- **RCAMSL**: Radiation Center Above Mean Sea Level (m)
+- **HAAT**: Height Above Average Terrain (m)
+- **ERP**: Effective Radiated Power (kW)
+- **DA**: Directional antenna (yes/no)
+- **AntID**: Antenna ID number
+- **Az**: Antenna azimuth (deg)
