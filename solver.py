@@ -26,6 +26,8 @@ from thrml.models import CategoricalEBMFactor, CategoricalGibbsConditional
 from thrml.models.ebm import DEFAULT_NODE_SHAPE_DTYPES
 from thrml.pgm import CategoricalNode
 
+WARNING_PREFIX = "!!! WARNING"
+
 if TYPE_CHECKING:  # pragma: no cover
     from lib.tv_web_viz import WebVizController
 
@@ -55,6 +57,14 @@ def _emit_log(message: str, log_fn: Callable[[str], None] | None) -> None:
         log_fn(message)
     else:
         print(message)
+
+
+def _emit_warning(message: str, log_fn: Callable[[str], None] | None) -> None:
+    """
+    Emit a warning-prefixed log message for higher visibility.
+    """
+
+    _emit_log(f"{WARNING_PREFIX}: {message}", log_fn)
 
 
 def _summarise_graph_stats(graph: TVGraph) -> list[str]:
@@ -164,7 +174,7 @@ def _make_interference_factor(
                 raise ValueError(f"Duplicate constraint: {key}")
             seen.add(key)
             constraint_rows.append(key)
-        if processed % 10 == 0:
+        if processed % 100 == 0:
             _emit_log(
                 f"      Processed {processed:,}/{total_indexed:,} stations "
                 f"(rows collected: {len(constraint_rows):,}).",
@@ -206,12 +216,12 @@ def _prepare_initial_state(
     free_blocks: Sequence[Block],
     seed: int,
     *,
-    force_random: bool = False,
+    init_random: bool = False,
     log_fn: Callable[[str], None] | None = None,
 ) -> tuple[list[jnp.ndarray], int, int]:
     """
     Build the sampler's initial block state, preferring post-auction channel assignments unless
-    ``force_random_init`` requests random initialisation within each station domain.
+    ``init_random`` requests random initialisation within each station domain.
     """
 
     key = jax.random.PRNGKey(seed)
@@ -222,11 +232,11 @@ def _prepare_initial_state(
         station_id = graph.station_id_for_index(station_index)
         station = graph.station(station_id)
         new_channel = station.new_channel
-        if not force_random and new_channel is not None:
+        if not init_random and new_channel is not None:
             if new_channel not in graph.channel_values:
                 channel_idx = graph.channel_count - 1
-                _emit_log(
-                    f"→ Station {station.station_id} has a new channel that is not in the graph channel set. Using the highest channel index, {channel_idx}.",
+                _emit_warning(
+                    f"Station {station.station_id} has a new channel that is not in the graph channel set. Using the highest channel index, {channel_idx}.",
                     log_fn,
                 )
             else:   
@@ -249,7 +259,7 @@ def _build_thrml_components(
     lambda_conflict: float,
     lambda_domain: float,
     seed: int,
-    force_random_init: bool = False,
+    init_random: bool = False,
     log_fn: Callable[[str], None] | None = None,
 ) -> PottsComponents:
     """
@@ -287,10 +297,10 @@ def _build_thrml_components(
         graph,
         free_blocks,
         seed,
-        force_random=force_random_init,
+        init_random=init_random,
         log_fn=log_fn,
     )
-    if force_random_init:
+    if init_random:
         _emit_log("→ Initial state seeded randomly from station domains (post-auction assignments ignored).", log_fn)
     else:
         _emit_log("→ Initial state seeded from post-auction channels where available.", log_fn)
@@ -577,98 +587,95 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sample Potts-model colourings for an FCC TVGraph using THRML.",
     )
     parser.add_argument(
-        "-i",
-        "--input",
+        "input",
         type=Path,
-        default=Path("fcc"),
-        help="Folder under ./input/ containing Domain.csv, Interference_Paired.csv, post_auction_parameters.csv.",
+        help="Dataset directory or preset name relative to ./input containing the station/channel graph to solve.",
     )
     parser.add_argument(
         "-lambda-conflict",
         "--lambda-conflict",
         type=float,
         default=8.0,
-        help="Energy penalty for triggering a constraint.",
+        help="Energy penalty applied whenever a channel assignment violates a constraint; increase to discourage conflicts.",
     )
     parser.add_argument(
         "-lambda-domain",
         "--lambda-domain",
         type=float,
         default=100.0,
-        help="Penalty for leaving a station domain.",
+        help="Energy penalty for assigning a station to a channel outside its permitted domain; increase to keep stations in-range.",
     )
     parser.add_argument(
         "-warmup",
         "--warmup",
         type=int,
         default=0,
-        help="Number of warmup sweeps before sampling (defaults to 0).",
+        help="Number of full Gibbs sweeps to discard before collecting samples; lets the Markov chain mix.",
     )
     parser.add_argument(
         "-samples",
         "--samples",
         type=int,
-        default=3333,
-        help="Number of samples to keep after warmup.",
+        default=50,
+        help="Total station-to-channel assignments to retain after warmup; each stored sample is a complete solution.",
     )
     parser.add_argument(
         "-steps-per-sample",
         "--steps-per-sample",
         type=int,
         default=1,
-        help="Gibbs sweeps between stored samples (thinning).",
+        help="Full Gibbs sweeps to run between stored samples (thinning) to reduce autocorrelation.",
     )
     parser.add_argument(
         "-seed",
         "--seed",
         type=int,
         default=0,
-        help="Random seed for initial state and sampling.",
+        help="Random seed controlling initial state selection and all sampler RNG; set for reproducible runs.",
     )
     parser.add_argument(
         "-r",
         "--init-random",
         action="store_true",
-        help="Ignore post-auction channel assignments and randomise the initial state.",
+        help="Start from a random channel assignment instead of the post-auction baseline when initialising the sampler.",
     )
     parser.add_argument(
-        "-v",
-        "--web-viz",
+        "--no-viz",
         action="store_true",
-        help="Serve a live D3 visualisation via FastAPI during sampling.",
+        help="Disable the FastAPI+D3 web UI (enabled by default) that streams sampler progress and intermediate stats.",
     )
     parser.add_argument(
         "-web-viz-host",
         "--web-viz-host",
         default="127.0.0.1",
-        help="Hostname interface for the web visualisation server.",
+        help="Hostname/interface for the web visualisation server (e.g. 0.0.0.0 to listen on all addresses).",
     )
     parser.add_argument(
         "-web-viz-port",
         "--web-viz-port",
         type=int,
         default=8765,
-        help="Port for the web visualisation server.",
+        help="TCP port that the web visualisation server exposes.",
     )
     parser.add_argument(
         "-web-viz-history-dir",
         "--web-viz-history-dir",
         type=Path,
         default=Path("runs"),
-        help="Directory for NDJSON history logs emitted by the web visualiser.",
+        help="Directory where the web visualiser writes NDJSON history logs for later inspection.",
     )
     parser.add_argument(
         "-web-viz-no-open",
         "--web-viz-no-open",
         action="store_true",
-        help="Skip automatically opening the browser when --web-viz is enabled.",
+        help="Prevent automatically opening a browser tab when the web visualisation is enabled; only print the URL.",
     )
     parser.add_argument(
         "-web-viz-no-block",
         "--web-viz-no-block",
         action="store_true",
         help=(
-            "If specified with --web-viz, the program will exit immediately after sampling completes "
+            "If specified while the web visualisation is enabled, the program will exit immediately after sampling completes "
             "instead of keeping the web visualisation server running for further inspection. "
             "Use this if you do not want to keep the web interface open after the run."
         ),
@@ -678,19 +685,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--web-viz-every",
         type=int,
         default=1,
-        help="Number of Gibbs sweeps between visual updates when --web-viz is enabled.",
+        help="Number of Gibbs sweeps between pushes to the web UI when visualisation is active; higher values update less often.",
     )
     parser.add_argument(
         "-web-viz-run-name",
         "--web-viz-run-name",
         type=str,
         default=None,
-        help="Optional label for the web visualisation run; defaults to a timestamp.",
+        help="Optional label shown in the web UI and stored in logs; defaults to a timestamp.",
     )
     parser.add_argument(
         "--jax-log-compiles",
         action="store_true",
-        help="Enable verbose JAX compile logging (defaults to disabled).",
+        help="Enable verbose JAX compilation logging to stdout for diagnosing long compile times.",
     )
     return parser
 
@@ -716,6 +723,9 @@ def main(argv: list[str] | None = None) -> int:
         if controller is not None and progress_replay_done:
             controller.log(message, level="progress", broadcast=True)
 
+    def record_warning(message: str) -> None:
+        record_progress(f"{WARNING_PREFIX}: {message}")
+
     if compile_logging_enabled:
         record_progress("JAX compile logging enabled (jax_log_compiles=True).")
 
@@ -724,6 +734,15 @@ def main(argv: list[str] | None = None) -> int:
     record_progress("Graph statistics snapshot:")
     for line in graph_stats_lines:
         record_progress(f"  {line}")
+
+    has_coordinates = any(
+        station.lat is not None and station.lon is not None
+        for station in graph.stations_by_id.values()
+    )
+    if not has_coordinates:
+        record_warning(
+            "Loaded dataset is missing latitude/longitude coordinates; map-based visualisations will not display station locations."
+        )
 
     devices = jax.devices()
     devices_summary = ", ".join(str(device) for device in devices) or "none"
@@ -736,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         lambda_conflict=args.lambda_conflict,
         lambda_domain=args.lambda_domain,
         seed=args.seed,
-        force_random_init=args.init_random,
+        init_random=args.init_random,
         log_fn=record_progress,
     )
 
@@ -756,13 +775,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        if args.web_viz:
+        if not args.no_viz:
             try:
                 from lib.tv_web_viz import WebVizConfig, WebVizController  # type: ignore[redefinition]
             except ImportError as exc:  # pragma: no cover
                 raise RuntimeError(
                     "Web visualisation requires the fastapi and uvicorn packages. "
-                    "Install them via `pip install fastapi uvicorn`."
+                    "Install them via `pip install fastapi uvicorn`, or re-run with `--no-viz` to disable the web interface."
                 ) from exc
 
             config = WebVizConfig(

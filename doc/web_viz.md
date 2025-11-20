@@ -18,8 +18,7 @@ pip install fastapi uvicorn
 Pass `--web-viz` to `solver.py`:
 
 ```bash
-./solver.py \
-    --input fcc \
+./solver.py fcc \
     --samples 2000 \
     --web-viz \
     --web-viz-port 8765 \

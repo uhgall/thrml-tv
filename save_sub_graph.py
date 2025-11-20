@@ -16,10 +16,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Export a BFS-limited FCC subgraph into a new input directory.",
     )
     parser.add_argument(
-        "-i", "--input",
+        "input",
         type=Path,
-        default=Path("fcc"),
-        help="Subdirectory under ./input/ to load (default: fcc).",
+        help="Input dataset directory or name (relative to ./input/).",
     )
     parser.add_argument(
         "-s", "--seed",

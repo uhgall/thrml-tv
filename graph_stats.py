@@ -183,10 +183,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Summarise FCC interference datasets and verify constraint symmetry.",
     )
     parser.add_argument(
-        "-i", "--input",
+        "input",
         type=Path,
-        default=Path("default"),
-        help="Subdirectory under ./input/ containing Domain.csv, Interference_Paired.csv, and parameters.csv (default: input/default).",
+        help="Input dataset directory or name (relative to ./input/).",
     )
     parser.add_argument(
         "-t", "--top",
