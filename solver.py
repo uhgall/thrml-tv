@@ -46,6 +46,7 @@ class PottsComponents:
     lambda_conflict_current: float
     conflict_factor_index: int | None
     conflict_base_weights: jnp.ndarray | None
+    lambda_conflict_adjustable: bool
 
 
 def _emit_log(message: str, log_fn: Callable[[str], None] | None) -> None:
@@ -260,6 +261,7 @@ def _build_thrml_components(
     lambda_domain: float,
     seed: int,
     init_random: bool = False,
+    allow_lambda_adjustment: bool = False,
     log_fn: Callable[[str], None] | None = None,
 ) -> PottsComponents:
     """
@@ -280,9 +282,14 @@ def _build_thrml_components(
         factors: list[CategoricalEBMFactor] = [domain_factor]
     else:
         _emit_log("→ Wiring pairwise Potts factor: λ_conflict penalises forbidden channel pairings.", log_fn)
-        conflict_factor, conflict_base_weights = conflict_factor_tuple
+        conflict_factor, conflict_weights = conflict_factor_tuple
         factors = [domain_factor, conflict_factor]
         conflict_factor_index = len(factors) - 1
+        conflict_base_weights = conflict_weights if allow_lambda_adjustment else None
+
+    lambda_conflict_adjustable = bool(allow_lambda_adjustment and conflict_factor_index is not None)
+    if not lambda_conflict_adjustable:
+        conflict_base_weights = None
 
     gibbs_spec = BlockGibbsSpec(
         free_super_blocks=free_blocks,
@@ -316,6 +323,7 @@ def _build_thrml_components(
         lambda_conflict_current=lambda_conflict,
         conflict_factor_index=conflict_factor_index,
         conflict_base_weights=conflict_base_weights,
+        lambda_conflict_adjustable=lambda_conflict_adjustable,
     )
 
 
@@ -331,6 +339,9 @@ def _set_conflict_penalty_value(components: PottsComponents, new_value: float) -
     """
     Update the conflict factor weights to match a new λ_conflict value.
     """
+
+    if not components.lambda_conflict_adjustable:
+        return None
 
     index = components.conflict_factor_index
     base_weights = components.conflict_base_weights
@@ -475,6 +486,9 @@ def _collect_samples_with_web_viz(
     last_logged_step: int | None = None
 
     def apply_control_updates() -> None:
+        if not components.lambda_conflict_adjustable:
+            return
+
         updates = viz.poll_control_updates()
         for update in updates:
             if update.get("type") == "set_lambda_conflict":
@@ -640,6 +654,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start from a random channel assignment instead of the post-auction baseline when initialising the sampler.",
     )
     parser.add_argument(
+        "--dynamic-lambda-adjustment",
+        action="store_true",
+        help="Allow live λ_conflict adjustments during sampling (requires storing an unscaled copy of conflict weights).",
+    )
+    parser.add_argument(
         "--no-viz",
         action="store_true",
         help="Disable the FastAPI+D3 web UI (enabled by default) that streams sampler progress and intermediate stats.",
@@ -756,6 +775,7 @@ def main(argv: list[str] | None = None) -> int:
         lambda_domain=args.lambda_domain,
         seed=args.seed,
         init_random=args.init_random,
+        allow_lambda_adjustment=args.dynamic_lambda_adjustment,
         log_fn=record_progress,
     )
 
@@ -798,7 +818,9 @@ def main(argv: list[str] | None = None) -> int:
                 run_metadata={
                     "lambda_conflict": args.lambda_conflict,
                     "lambda_domain": args.lambda_domain,
+                    "lambda_conflict_adjustable": components.lambda_conflict_adjustable,
                 },
+                lambda_conflict_adjustable=components.lambda_conflict_adjustable,
             )
             controller.start()
             record_progress(f"→ Web visualisation running at {controller.url}")
