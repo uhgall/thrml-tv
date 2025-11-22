@@ -27,9 +27,13 @@ We formulate repacking as an energy minimization problem:
 - **Unary factors**: penalize assignments outside each station’s allowed channel list.
 - **Pairwise factors**: penalize interfering stations assigned to the same channel.
 
-The software implementation supports CPU and GPU execution via [Extropic's THRML SDK](https://extropic.com/). Once Extropic's hardware becomes available, it should be possible to run it directly on the hardware.
+The software implementation supports CPU and GPU execution via [Extropic's THRML SDK](https://extropic.com/). 
+It runs ok with up to about 400 nodes (on my Macbook Pro, without GPU support I think). 
+GPU did not help much (thanks, @Dtrimcev, for working on that during the hackathon!)
 
-For details, see [doc/overview.md](doc/overview.md).
+Once Extropic's hardware becomes available, it should be possible to run it directly on the hardware, and it should run a lot faster, and hopefully handle all 2000+ stations.
+
+For details of how it was all implemented, see [doc/overview.md](doc/overview.md).
 
 ## Source Code 
 
