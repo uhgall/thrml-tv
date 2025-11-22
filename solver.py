@@ -158,14 +158,11 @@ def _make_interference_factor(
     """
 
     _emit_log("    Aggregating interference constraints for Potts factor.", log_fn)
-    total_indexed = sum(1 for station in graph.stations_by_id.values() if station.station_index is not None)
     seen: set[tuple[int, int, int, int]] = set()
     constraint_rows: list[tuple[int, int, int, int]] = []
-    processed = 0
     for station in graph.stations_by_id.values():
         if station.station_index is None:
             continue
-        processed += 1
         a_idx = station.station_index
         for interference, partner_idx in station.interferences_deduped():
             a_chan_idx = interference.subject_channel_index
@@ -175,12 +172,7 @@ def _make_interference_factor(
                 raise ValueError(f"Duplicate constraint: {key}")
             seen.add(key)
             constraint_rows.append(key)
-        if processed % 100 == 0:
-            _emit_log(
-                f"      Processed {processed:,}/{total_indexed:,} stations "
-                f"(rows collected: {len(constraint_rows):,}).",
-                log_fn,
-            )
+    _emit_log(f"    Constraint aggregation complete: {len(constraint_rows):,} unique rows captured.", log_fn)
 
     if not constraint_rows:
         return None
@@ -201,12 +193,21 @@ def _make_interference_factor(
     head_nodes: list[CategoricalNode] = []
     tail_nodes: list[CategoricalNode] = []
 
+    progress_intervals = 10
+    edge_count = len(constraint_rows)
+    next_progress = 0
     for idx, (a_idx, b_idx, a_chan_idx, b_chan_idx) in enumerate(constraint_rows):
         head_nodes.append(nodes[a_idx])
         tail_nodes.append(nodes[b_idx])
         weights[idx, a_chan_idx, b_chan_idx] = -float(penalty)
-        if (idx + 1) % 250000 == 0:
-            _emit_log(f"      Populated {idx + 1:,}/{edge_count:,} pairwise entries.", log_fn)
+        percent_done = int(100 * (idx + 1) / edge_count)
+        if percent_done >= next_progress and percent_done % (100 // progress_intervals) == 0:
+            _emit_log(
+                f"      Populated {percent_done}% ({idx + 1:,}/{edge_count:,}) pairwise entries.", 
+                log_fn
+            )
+            # Only print once at each 10% interval
+            next_progress = percent_done + (100 // progress_intervals)
 
     weights_jnp = jnp.asarray(weights)
     return CategoricalEBMFactor([Block(head_nodes), Block(tail_nodes)], weights_jnp), weights_jnp
