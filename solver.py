@@ -685,6 +685,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory where the web visualiser writes NDJSON history logs for later inspection.",
     )
     parser.add_argument(
+        "-web-viz-output-dir",
+        "--web-viz-output-dir",
+        type=Path,
+        default=Path("output"),
+        help="Directory where offline replay bundles will be written after the run completes.",
+    )
+    parser.add_argument(
         "-web-viz-no-open",
         "--web-viz-no-open",
         action="store_true",
@@ -809,6 +816,7 @@ def main(argv: list[str] | None = None) -> int:
                 host=args.web_viz_host,
                 port=args.web_viz_port,
                 history_dir=args.web_viz_history_dir,
+                output_root=args.web_viz_output_dir,
                 auto_open=not args.web_viz_no_open,
                 block=not args.web_viz_no_block,
                 run_name=args.web_viz_run_name,
@@ -866,6 +874,14 @@ def main(argv: list[str] | None = None) -> int:
         record_progress(f"  {station_id:<8} → {channel}")
     if graph.station_count > preview:
         record_progress("  … (truncated)")
+
+    if controller is not None:
+        try:
+            replay_dir = controller.export_replay_bundle()
+            if replay_dir is not None:
+                record_progress(f"Offline replay bundle available at {replay_dir}")
+        except Exception as exc:
+            record_warning(f"Failed to export offline replay bundle: {exc}")
 
     if controller is not None:
         if controller.config.block:

@@ -41,6 +41,16 @@ For details of how it was all implemented, see [doc/overview.md](doc/overview.md
 - `lib/tv_web_viz.py` (with static assets in `lib/web_viz_static/`) drives the live FastAPI/D3 visualiser for sampler runs.
 - `solver.py`, `graph_stats.py`, and `save_sub_graph.py` are CLI entry points you can run from the project root.
 
+## Offline replays
+
+Whenever you run `solver.py` with the web visualiser enabled (the default), the sampler stream is captured to `runs/<run-label>.ndjson` and, when the run finishes, a static replay bundle is exported to `output/<dataset>-<run-label>/`. Each bundle contains:
+
+- `index.html`, `styles.css`, `app.js`, and `d3.v7.min.js` — the self-contained UI assets.
+- `data.js` — embedded graph metadata and the entire sampler history (no network calls required).
+- `history.ndjson` and `run.log` — the raw event log for auditing.
+
+You can open the bundle directly from the filesystem (double-click `index.html`) without running a backend server. If you want to change where bundles are written, pass `--web-viz-output-dir /path/to/output` when invoking `solver.py`.
+
 
 
 
