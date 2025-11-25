@@ -2,7 +2,7 @@
 
 This repository demonstrates how [Extropic](https://extropic.com)'s thermodynamic computing technology can tackle challenging graph coloring problems, focusing on a real-world example: a TV station channel packing problem.
 
-Here is an [interactive demo showing the solver at work.](https://uhgall.github.io/thrml-tv/doc/demo/)
+Here is an [interactive demo showing the solver at work.](https://uhgall.github.io/thrml-tv/docs/demo/)
 
 This project was one of the winners at the THRML-HACK hackathon on Nov 16, 2025. Feel free to do whatever you want with this code - MIT License.
 
@@ -35,7 +35,7 @@ GPU did not help much (thanks, @Dtrimcev, for working on that during the hackath
 
 Once Extropic's hardware becomes available, it should be possible to run it directly on the hardware, and it should run a lot faster, and hopefully handle all 2000+ stations.
 
-For details of how it was all implemented, see [doc/overview.md](doc/overview.md).
+For details of how it was all implemented, see [docs/overview.md](docs/overview.md).
 
 ## Source Code 
 
