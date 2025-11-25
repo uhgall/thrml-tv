@@ -2,11 +2,13 @@
 
 This repository demonstrates how [Extropic](https://extropic.com)'s thermodynamic computing technology can tackle challenging graph coloring problems, focusing on a real-world example: a TV station channel packing problem.
 
-Here is an [interactive demo showing the solver at work.](https://uhgall.github.io/thrml-tv/demo/)
+Here is an [interactive demo showing the solver at work](https://uhgall.github.io/thrml-tv/demo/), for a smaller subgraph.
+
+[![400-node coloring replay](lib/web_viz_static/400.gif)](https://uhgall.github.io/thrml-tv/demo/)
 
 This project was one of the winners at the THRML-HACK hackathon on Nov 16, 2025. Feel free to do whatever you want with this code - MIT License.
 
-## Example problem: FCC Incentive Auction
+## Example problem background: FCC Incentive Auction
 
 The FCC Incentive Auction (2016–2017) was a government-run two-sided auction, in which:
 
