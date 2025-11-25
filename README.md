@@ -2,6 +2,8 @@
 
 This repository demonstrates how [Extropic](https://extropic.com)'s thermodynamic computing technology can tackle challenging graph coloring problems, focusing on a real-world example: a TV station channel packing problem.
 
+Here is an [interactive demo showing the solver at work.](doc/demo/index.html)
+
 This project was one of the winners at the THRML-HACK hackathon on Nov 16, 2025. Feel free to do whatever you want with this code - MIT License.
 
 ## Example problem: FCC Incentive Auction
